@@ -1,0 +1,81 @@
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: rgba(0, 0, 0, 0.8);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 999px;
+  padding: 8px 16px;
+}
+
+.indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--danger);
+  animation: blink 1s infinite;
+}
+
+.dotPaused {
+  animation: none;
+  background: var(--warning);
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.time {
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  min-width: 48px;
+}
+
+.pauseBtn,
+.resumeBtn,
+.stopBtn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  transition: background 0.15s;
+}
+
+.pauseBtn {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}
+.pauseBtn:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.resumeBtn {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}
+.resumeBtn:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.stopBtn {
+  background: var(--danger);
+  color: #fff;
+}
+.stopBtn:hover {
+  background: #c93c3b;
+}

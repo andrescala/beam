@@ -1,0 +1,123 @@
+.inspector {
+  width: 220px;
+  flex-shrink: 0;
+  background: var(--bg2);
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.header {
+  padding: 10px 14px 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.section {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.section:last-child {
+  border-bottom: none;
+}
+
+.label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 10px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.key {
+  color: var(--text2);
+}
+
+.value {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+}
+
+.input {
+  width: 72px;
+  text-align: right;
+  font-size: 11px;
+  font-family: var(--mono);
+  background: var(--bg3);
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  padding: 3px 6px;
+  color: var(--text);
+  outline: none;
+}
+.input:focus {
+  border-color: var(--info);
+}
+
+.slider {
+  width: 100%;
+  margin: 4px 0 8px;
+}
+
+.positionGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.posBtn {
+  padding: 4px;
+  font-size: 10px;
+  font-family: var(--mono);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text3);
+  cursor: pointer;
+}
+.posBtn:hover {
+  background: var(--bg3);
+}
+.posBtnActive {
+  background: var(--bg3);
+  border-color: var(--info);
+  color: var(--info);
+}
+
+.toggleGroup {
+  display: flex;
+  gap: 2px;
+}
+
+.toggleBtn {
+  font-size: 10px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text3);
+  cursor: pointer;
+  font-family: var(--sans);
+}
+.toggleBtn:hover {
+  background: var(--bg3);
+}
+.toggleActive {
+  background: var(--bg3);
+  border-color: var(--border2);
+  color: var(--text);
+}
