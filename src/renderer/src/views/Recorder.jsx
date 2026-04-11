@@ -1,13 +1,16 @@
+import { useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import SourcePicker from '../components/SourcePicker'
 import Countdown from '../components/Countdown'
 import RecordingControls from '../components/RecordingControls'
 import WebcamPreview from '../components/WebcamPreview'
+import { useToast } from '../components/Toast'
 import useRecorder from '../hooks/useRecorder'
 import styles from './Recorder.module.css'
 
 function Recorder() {
   const navigate = useNavigate()
+  const showToast = useToast()
   const {
     state,
     elapsed,
@@ -23,20 +26,49 @@ function Recorder() {
     stopRecording
   } = useRecorder()
 
-  async function handleStop() {
+  const handleStop = useCallback(async () => {
     try {
       const projectId = await stopRecording()
       if (projectId) {
+        showToast('success', 'Recording saved')
         navigate(`/editor/${projectId}`)
       } else {
-        // Something went wrong but we have no project — go home
+        showToast('error', 'Recording failed — no project created')
         navigate('/')
       }
     } catch (err) {
       console.error('Stop recording failed:', err)
+      showToast('error', 'Failed to save recording')
       navigate('/')
     }
-  }
+  }, [stopRecording, navigate, showToast])
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    function handleKeyDown(e) {
+      // Only handle shortcuts during recording/paused states
+      if (state === 'recording') {
+        if (e.code === 'Space' || e.key === 'p') {
+          e.preventDefault()
+          pauseRecording()
+        } else if (e.key === 'Escape' || e.key === 's') {
+          e.preventDefault()
+          handleStop()
+        }
+      } else if (state === 'paused') {
+        if (e.code === 'Space' || e.key === 'p') {
+          e.preventDefault()
+          resumeRecording()
+        } else if (e.key === 'Escape' || e.key === 's') {
+          e.preventDefault()
+          handleStop()
+        }
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [state, pauseRecording, resumeRecording, handleStop])
 
   if (state === 'idle') {
     return (

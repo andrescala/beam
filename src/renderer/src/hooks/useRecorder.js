@@ -4,7 +4,7 @@ export default function useRecorder() {
   const [state, setState] = useState('idle') // idle, countdown, recording, paused, saving, stopped
   const [elapsed, setElapsed] = useState(0)
   const [selectedSource, setSelectedSource] = useState(null)
-  const [webcamEnabled, setWebcamEnabled] = useState(false)
+  const [webcamEnabled, setWebcamEnabledState] = useState(false)
   const [webcamStream, setWebcamStream] = useState(null)
 
   const screenRecorderRef = useRef(null)
@@ -20,9 +20,19 @@ export default function useRecorder() {
   // Track elapsed in a ref so the onstop closure always has the latest value
   const elapsedRef = useRef(0)
 
+  // Load webcam preference on mount
   useEffect(() => {
+    window.electronAPI.getPreferences().then((prefs) => {
+      setWebcamEnabledState(prefs.webcamEnabled ?? false)
+    }).catch(() => {})
     return () => cleanup()
   }, [])
+
+  // Persist webcam toggle to preferences
+  function setWebcamEnabled(enabled) {
+    setWebcamEnabledState(enabled)
+    window.electronAPI.setPreferences({ webcamEnabled: enabled }).catch(() => {})
+  }
 
   function cleanup() {
     clearInterval(timerRef.current)
@@ -127,6 +137,7 @@ export default function useRecorder() {
     } catch (err) {
       console.error('Failed to start recording:', err)
       setState('idle')
+      throw err // Let caller handle with toast
     }
   }
 

@@ -4,11 +4,13 @@ import VideoPreview from '../components/VideoPreview'
 import Timeline from '../components/Timeline'
 import Inspector from '../components/Inspector'
 import ExportModal from '../components/ExportModal'
+import { useToast } from '../components/Toast'
 import styles from './Editor.module.css'
 
 function Editor() {
   const { projectId } = useParams()
   const navigate = useNavigate()
+  const showToast = useToast()
   const [project, setProject] = useState(null)
   const [projectPath, setProjectPath] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -35,22 +37,33 @@ function Editor() {
     } catch (err) {
       console.error('Failed to load project:', err)
       setError(err.message || 'Failed to load project')
+      showToast('error', 'Failed to load project')
     } finally {
       setLoading(false)
     }
   }
 
   const updateProject = useCallback(async (updates) => {
-    const updated = { ...project, ...updates }
-    setProject(updated)
-    await window.electronAPI.saveProject(projectId, updated)
-  }, [project, projectId])
+    try {
+      const updated = { ...project, ...updates }
+      setProject(updated)
+      await window.electronAPI.saveProject(projectId, updated)
+    } catch (err) {
+      console.error('Failed to save project:', err)
+      showToast('error', 'Failed to save changes')
+    }
+  }, [project, projectId, showToast])
 
   const updateEdit = useCallback(async (editUpdates) => {
-    const updated = { ...project, edit: { ...project.edit, ...editUpdates } }
-    setProject(updated)
-    await window.electronAPI.saveProject(projectId, updated)
-  }, [project, projectId])
+    try {
+      const updated = { ...project, edit: { ...project.edit, ...editUpdates } }
+      setProject(updated)
+      await window.electronAPI.saveProject(projectId, updated)
+    } catch (err) {
+      console.error('Failed to save edit:', err)
+      showToast('error', 'Failed to save changes')
+    }
+  }, [project, projectId, showToast])
 
   function handleSeek(time) {
     setCurrentTime(time)
@@ -77,7 +90,7 @@ function Editor() {
     return (
       <div className={styles.loading}>
         <p>{error || 'Project not found.'}</p>
-        <button className={styles.backBtn} onClick={() => navigate('/')}>← Go Home</button>
+        <button className={styles.backBtn} onClick={() => navigate('/')}>&#x2190; Go Home</button>
       </div>
     )
   }
@@ -87,7 +100,7 @@ function Editor() {
       <header className={styles.titlebar + ' titlebar-drag'}>
         <div className={styles.titlebarLeft}>
           <button className={styles.backBtn} onClick={() => navigate('/')}>
-            ← Home
+            &#x2190; Home
           </button>
           <span className={styles.projectName}>{project.name}</span>
         </div>

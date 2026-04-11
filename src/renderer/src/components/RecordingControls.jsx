@@ -15,17 +15,17 @@ function RecordingControls({ state, elapsed, onPause, onResume, onStop }) {
       </div>
 
       {state === 'recording' ? (
-        <button className={styles.pauseBtn} onClick={onPause} title="Pause">
-          ⏸
+        <button className={styles.pauseBtn} onClick={onPause} title="Pause (Space)">
+          &#x23F8;
         </button>
       ) : (
-        <button className={styles.resumeBtn} onClick={onResume} title="Resume">
-          ▶
+        <button className={styles.resumeBtn} onClick={onResume} title="Resume (Space)">
+          &#x25B6;
         </button>
       )}
 
-      <button className={styles.stopBtn} onClick={onStop} title="Stop recording">
-        ■
+      <button className={styles.stopBtn} onClick={onStop} title="Stop recording (Esc)">
+        &#x25A0;
       </button>
     </div>
   )

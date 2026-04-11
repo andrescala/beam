@@ -56,6 +56,30 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  cursor: text;
+  border-radius: 4px;
+  padding: 1px 2px;
+  margin: -1px -2px;
+}
+.name:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.nameInput {
+  font-size: 13px;
+  font-weight: 600;
+  font-family: var(--sans);
+  width: 100%;
+  margin-bottom: 2px;
+  padding: 1px 4px;
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  background: var(--bg3);
+  color: var(--text);
+  outline: none;
+}
+.nameInput:focus {
+  border-color: var(--info);
 }
 
 .date {
