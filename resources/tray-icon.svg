@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="b" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#4facfe"/>
+      <stop offset="100%" style="stop-color:#00f2fe"/>
+    </linearGradient>
+  </defs>
+  <!-- Screen -->
+  <rect x="32" y="48" width="192" height="132" rx="12" ry="12" fill="none" stroke="url(#b)" stroke-width="8"/>
+  <!-- Play -->
+  <polygon points="104,88 104,148 156,118" fill="url(#b)"/>
+  <!-- Recording dot -->
+  <circle cx="62" cy="78" r="8" fill="#ff4757"/>
+  <!-- Stand -->
+  <rect x="104" y="182" width="48" height="12" rx="4" fill="url(#b)" opacity="0.5"/>
+  <rect x="84" y="194" width="88" height="10" rx="5" fill="url(#b)" opacity="0.4"/>
+</svg>

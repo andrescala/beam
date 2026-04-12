@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <!-- App icon background gradient -->
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a1a2e"/>
+      <stop offset="100%" style="stop-color:#16213e"/>
+    </linearGradient>
+    <!-- Beam glow gradient -->
+    <linearGradient id="beam" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#4facfe"/>
+      <stop offset="100%" style="stop-color:#00f2fe"/>
+    </linearGradient>
+    <!-- Recording dot glow -->
+    <radialGradient id="dotGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" style="stop-color:#ff4757;stop-opacity:0.6"/>
+      <stop offset="100%" style="stop-color:#ff4757;stop-opacity:0"/>
+    </radialGradient>
+    <!-- Beam light cone -->
+    <linearGradient id="cone" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#4facfe;stop-opacity:0.5"/>
+      <stop offset="100%" style="stop-color:#00f2fe;stop-opacity:0.08"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background rounded square (macOS style) -->
+  <rect x="0" y="0" width="1024" height="1024" rx="228" ry="228" fill="url(#bg)"/>
+
+  <!-- Subtle grid pattern for "screen" feel -->
+  <g opacity="0.04">
+    <line x1="256" y1="0" x2="256" y2="1024" stroke="#fff" stroke-width="1"/>
+    <line x1="512" y1="0" x2="512" y2="1024" stroke="#fff" stroke-width="1"/>
+    <line x1="768" y1="0" x2="768" y2="1024" stroke="#fff" stroke-width="1"/>
+    <line x1="0" y1="256" x2="1024" y2="256" stroke="#fff" stroke-width="1"/>
+    <line x1="0" y1="512" x2="1024" y2="512" stroke="#fff" stroke-width="1"/>
+    <line x1="0" y1="768" x2="1024" y2="768" stroke="#fff" stroke-width="1"/>
+  </g>
+
+  <!-- Light beam / cone emanating from top-left -->
+  <path d="M 280 320 L 780 420 L 780 620 L 280 520 Z" fill="url(#cone)" opacity="0.6"/>
+  <path d="M 280 340 L 820 440 L 820 600 L 280 500 Z" fill="url(#cone)" opacity="0.3"/>
+
+  <!-- Screen / monitor shape -->
+  <rect x="300" y="280" width="440" height="300" rx="16" ry="16" fill="none" stroke="url(#beam)" stroke-width="6" opacity="0.9"/>
+
+  <!-- Screen inner glow -->
+  <rect x="316" y="296" width="408" height="268" rx="8" ry="8" fill="#4facfe" opacity="0.06"/>
+
+  <!-- Play triangle inside screen -->
+  <polygon points="470,380 470,480 560,430" fill="url(#beam)" opacity="0.85"/>
+
+  <!-- Webcam circle (bottom-right of screen) -->
+  <circle cx="680" cy="520" r="48" fill="#1a1a2e" stroke="url(#beam)" stroke-width="4"/>
+  <circle cx="680" cy="520" r="30" fill="#4facfe" opacity="0.15"/>
+  <circle cx="680" cy="520" r="14" fill="url(#beam)" opacity="0.7"/>
+
+  <!-- Recording indicator dot (top-left) -->
+  <circle cx="350" cy="330" r="24" fill="url(#dotGlow)"/>
+  <circle cx="350" cy="330" r="10" fill="#ff4757"/>
+
+  <!-- Monitor stand -->
+  <rect x="478" y="584" width="68" height="20" rx="4" fill="url(#beam)" opacity="0.3"/>
+  <rect x="440" y="604" width="144" height="10" rx="5" fill="url(#beam)" opacity="0.4"/>
+
+  <!-- "BEAM" wordmark below -->
+  <text x="512" y="740" text-anchor="middle" font-family="system-ui, -apple-system, 'Helvetica Neue', sans-serif" font-size="96" font-weight="800" letter-spacing="16" fill="#ffffff" opacity="0.95">BEAM</text>
+
+  <!-- Tagline -->
+  <text x="512" y="790" text-anchor="middle" font-family="system-ui, -apple-system, 'Helvetica Neue', sans-serif" font-size="28" font-weight="400" letter-spacing="6" fill="#4facfe" opacity="0.6">SCREEN RECORDER</text>
+</svg>

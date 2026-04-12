@@ -29,7 +29,9 @@
   "build": {
     "appId": "com.beamrecorder.app",
     "productName": "Beam",
+    "icon": "resources/icon.png",
     "mac": {
+      "icon": "resources/icon.icns",
       "category": "public.app-category.video",
       "entitlements": "build/entitlements.mac.plist",
       "hardenedRuntime": true,
@@ -38,6 +40,12 @@
         "NSCameraUsageDescription": "Beam needs camera access to record webcam overlay.",
         "NSScreenCaptureUsageDescription": "Beam needs screen recording permission to capture your screen."
       }
+    },
+    "win": {
+      "icon": "resources/icon.ico"
+    },
+    "linux": {
+      "icon": "resources/icon.png"
     },
     "asarUnpack": [
       "node_modules/ffmpeg-static/**"
