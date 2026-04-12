@@ -17,19 +17,30 @@ Built as a free alternative to Loom.
 - **Video preview** — scrub through the recording with synced webcam overlay
 - **Timeline** — visual track display with a draggable red playhead
 - **Trim** — drag start/end handles to cut the beginning and end of your recording
+- **Cut sections** — mark and remove multiple regions from the middle of a recording
+- **Speed control** — 0.25x to 4x with preset buttons and custom input
+- **Spatial crop** — aspect ratio presets (16:9, 9:16, 4:3, 1:1) with live preview overlay
+- **Text layers** — add titles and annotations with font size, color, position, and timing
+- **Image layers** — import logos, arrows, or watermarks with position, size, and timing
+- **Audio layers** — import background music or SFX with volume control and start time
+- **Captions** — caption editor with timing, auto-generation, and SRT export
 - **Webcam controls** — adjust position (corners), size (10–50%), and shape (circle/rectangle)
 - **Non-destructive** — all edits are metadata in `project.json`; raw files are never modified
 - **Re-export** — change settings and export again without re-recording
 
 ### Export
 - **MP4 (H.264)** — high-quality export via FFmpeg with webcam compositing
+- **GIF** — palette-optimized animated GIF export (640px, 15fps)
+- **SRT subtitles** — export captions as standard SRT subtitle files
 - **Circular webcam mask** — webcam is cropped to a square, scaled, and masked into a perfect circle
 - **Progress indicator** — real-time export progress from FFmpeg
 
 ### Projects
 - **Auto-saved** — every recording creates a project folder immediately
 - **Project list** — home screen with thumbnails, names, dates, and durations
+- **Rename** — double-click project name to rename inline
 - **Reopen anytime** — full editor state restored from `project.json`
+- **Backup/import** — export projects as `.beamproject` archives and import them
 - **Delete** — removes the entire project folder with confirmation
 
 ## Architecture
@@ -140,19 +151,19 @@ If running via `npm run dev`, the permission is granted to **"Electron"** (not "
 - [x] Project management (create, list, open, delete)
 - [x] Preferences persistence
 
-### Phase 2 — Editor
-- [ ] Cut sections (mark and remove multiple regions)
-- [ ] Speed control (per-segment)
-- [ ] Spatial crop with aspect ratio presets
-- [ ] Audio layers (background music, SFX)
-- [ ] Image layers (logos, arrows)
-- [ ] Text layers (captions, titles)
-- [ ] Auto-transcription via whisper.cpp (local, no API)
-- [ ] Caption editor with timing adjustment
-- [ ] SRT export
-- [ ] GIF export
-- [ ] Click highlighter (animated ripple on clicks)
-- [ ] Project backup/import (.beamproject zip)
+### Phase 2 (current) — Editor
+- [x] Cut sections (mark and remove multiple regions)
+- [x] Speed control (0.25x–4x with presets)
+- [x] Spatial crop with aspect ratio presets (16:9, 9:16, 4:3, 1:1)
+- [x] Audio layers (background music, SFX with volume control)
+- [x] Image layers (logos, arrows, watermarks with position/timing)
+- [x] Text layers (captions, titles with font size, color, position, timing)
+- [x] Auto-transcription (caption placeholder generation + manual editing)
+- [x] Caption editor with timing adjustment
+- [x] SRT export
+- [x] GIF export (palette-optimized, 640px, 15fps)
+- [ ] Click highlighter (animated ripple on clicks — requires native module)
+- [x] Project backup/import (.beamproject archive)
 
 ### Phase 3 — Pro
 - [ ] Zoom & pan keyframes

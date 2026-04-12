@@ -149,3 +149,46 @@
   border-color: var(--border2);
   color: var(--text);
 }
+
+.cropPresets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.cropBtn {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 2px;
+  font-size: 10px;
+  font-family: var(--mono);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text3);
+  cursor: pointer;
+}
+.cropBtn:hover {
+  background: var(--bg3);
+}
+.cropBtnActive {
+  background: var(--bg3);
+  border-color: var(--info);
+  color: var(--info);
+}
+
+.backupBtn {
+  width: 100%;
+  padding: 6px;
+  font-size: 11px;
+  font-family: var(--sans);
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text2);
+  cursor: pointer;
+}
+.backupBtn:hover {
+  background: var(--bg3);
+  color: var(--text);
+}

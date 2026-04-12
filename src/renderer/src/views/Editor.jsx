@@ -3,6 +3,8 @@ import { useParams, useNavigate } from 'react-router-dom'
 import VideoPreview from '../components/VideoPreview'
 import Timeline from '../components/Timeline'
 import Inspector from '../components/Inspector'
+import LayerPanel from '../components/LayerPanel'
+import CaptionEditor from '../components/CaptionEditor'
 import ExportModal from '../components/ExportModal'
 import { useToast } from '../components/Toast'
 import styles from './Editor.module.css'
@@ -18,6 +20,7 @@ function Editor() {
   const [currentTime, setCurrentTime] = useState(0)
   const [playing, setPlaying] = useState(false)
   const [exporting, setExporting] = useState(false)
+  const [bottomTab, setBottomTab] = useState('timeline') // timeline, layers, captions
   const videoRef = useRef(null)
 
   useEffect(() => {
@@ -30,9 +33,6 @@ function Editor() {
         window.electronAPI.loadProject(projectId),
         window.electronAPI.getProjectPath(projectId)
       ])
-      // Ensure new edit fields have defaults
-      if (!data.edit.cuts) data.edit.cuts = []
-      if (!data.edit.speed) data.edit.speed = 1.0
       setProject(data)
       setProjectPath(path)
     } catch (err) {
@@ -43,17 +43,6 @@ function Editor() {
       setLoading(false)
     }
   }
-
-  const updateProject = useCallback(async (updates) => {
-    try {
-      const updated = { ...project, ...updates }
-      setProject(updated)
-      await window.electronAPI.saveProject(projectId, updated)
-    } catch (err) {
-      console.error('Failed to save project:', err)
-      showToast('error', 'Failed to save changes')
-    }
-  }, [project, projectId, showToast])
 
   const updateEdit = useCallback(async (editUpdates) => {
     try {
@@ -124,17 +113,60 @@ function Editor() {
             onTogglePlay={togglePlay}
             onEnded={() => setPlaying(false)}
           />
-          <Timeline
-            project={project}
-            currentTime={currentTime}
-            onSeek={handleSeek}
-            onTrimChange={updateEdit}
-            onCutsChange={updateEdit}
-          />
+
+          {/* Bottom panel tabs */}
+          <div className={styles.bottomTabs}>
+            <button
+              className={`${styles.tabBtn} ${bottomTab === 'timeline' ? styles.tabBtnActive : ''}`}
+              onClick={() => setBottomTab('timeline')}
+            >
+              Timeline
+            </button>
+            <button
+              className={`${styles.tabBtn} ${bottomTab === 'layers' ? styles.tabBtnActive : ''}`}
+              onClick={() => setBottomTab('layers')}
+            >
+              Layers
+            </button>
+            <button
+              className={`${styles.tabBtn} ${bottomTab === 'captions' ? styles.tabBtnActive : ''}`}
+              onClick={() => setBottomTab('captions')}
+            >
+              Captions {(project.edit?.captions?.length || 0) > 0 && `(${project.edit.captions.length})`}
+            </button>
+          </div>
+
+          <div className={styles.bottomPanel}>
+            {bottomTab === 'timeline' && (
+              <Timeline
+                project={project}
+                currentTime={currentTime}
+                onSeek={handleSeek}
+                onTrimChange={updateEdit}
+                onCutsChange={updateEdit}
+              />
+            )}
+            {bottomTab === 'layers' && (
+              <LayerPanel
+                project={project}
+                projectId={projectId}
+                onEditChange={updateEdit}
+              />
+            )}
+            {bottomTab === 'captions' && (
+              <CaptionEditor
+                project={project}
+                projectId={projectId}
+                currentTime={currentTime}
+                onEditChange={updateEdit}
+              />
+            )}
+          </div>
         </div>
 
         <Inspector
           project={project}
+          projectId={projectId}
           onEditChange={updateEdit}
         />
       </div>

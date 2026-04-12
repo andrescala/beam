@@ -18,9 +18,20 @@ const electronAPI = {
   saveRawRecording: (projectId, type, buffer) =>
     ipcRenderer.invoke('save-raw-recording', projectId, type, buffer),
 
+  // Assets
+  importAsset: (projectId, type) => ipcRenderer.invoke('import-asset', projectId, type),
+
   // Processing
   processRecording: (projectId, format) => ipcRenderer.invoke('process-recording', projectId, format),
   generateThumbnail: (projectId) => ipcRenderer.invoke('generate-thumbnail', projectId),
+  extractAudio: (projectId) => ipcRenderer.invoke('extract-audio', projectId),
+
+  // SRT export
+  exportSrt: (projectId) => ipcRenderer.invoke('export-srt', projectId),
+
+  // Project backup/import
+  exportProjectZip: (projectId) => ipcRenderer.invoke('export-project-zip', projectId),
+  importProjectZip: () => ipcRenderer.invoke('import-project-zip'),
 
   // Dialogs & shell
   saveDialog: (options) => ipcRenderer.invoke('save-dialog', options),

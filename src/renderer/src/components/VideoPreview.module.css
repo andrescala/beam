@@ -34,6 +34,54 @@
   border: 2px solid rgba(255, 255, 255, 0.2);
 }
 
+.imageOverlay {
+  position: absolute;
+  height: auto;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.textOverlay {
+  position: absolute;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 3;
+  text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.7);
+  border-radius: 4px;
+}
+
+.captionOverlay {
+  position: absolute;
+  bottom: 10%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.6);
+  color: #ffffff;
+  font-size: 16px;
+  font-weight: 600;
+  padding: 4px 16px;
+  border-radius: 4px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 4;
+  text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+.cropDim {
+  position: absolute;
+  background: rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+  z-index: 5;
+}
+
+.cropBorder {
+  position: absolute;
+  border: 2px dashed rgba(133, 183, 235, 0.7);
+  pointer-events: none;
+  z-index: 6;
+  border-radius: 2px;
+}
+
 .placeholder {
   width: 100%;
   height: 100%;
@@ -82,4 +130,14 @@
   border-radius: 4px;
   background: rgba(133, 183, 235, 0.2);
   color: var(--info);
+}
+
+.cropBadge {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(239, 159, 39, 0.2);
+  color: var(--warning);
 }

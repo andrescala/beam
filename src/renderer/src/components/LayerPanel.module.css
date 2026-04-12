@@ -1,0 +1,192 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.section {
+  border-bottom: 1px solid var(--border);
+}
+
+.sectionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  color: var(--text2);
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--sans);
+  cursor: pointer;
+  text-align: left;
+}
+.sectionHeader:hover {
+  background: var(--bg3);
+}
+
+.addBtn {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  border: 1px solid var(--border2);
+  background: transparent;
+  color: var(--text2);
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+.addBtn:hover {
+  background: var(--bg3);
+  color: var(--text);
+}
+
+.sectionBody {
+  padding: 0 8px 8px;
+}
+
+.empty {
+  font-size: 10px;
+  color: var(--text3);
+  text-align: center;
+  padding: 8px 4px;
+}
+
+.layerCard {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 6px;
+  overflow: hidden;
+}
+
+.layerHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.layerName {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.textInput {
+  flex: 1;
+  font-size: 11px;
+  font-family: var(--sans);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 3px 6px;
+  color: var(--text);
+  outline: none;
+  margin-right: 6px;
+}
+.textInput:focus {
+  border-color: var(--info);
+}
+
+.removeBtn {
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  border: none;
+  background: transparent;
+  color: var(--text3);
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.removeBtn:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
+.layerProps {
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.propRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+}
+
+.propRow label {
+  width: 32px;
+  flex-shrink: 0;
+  color: var(--text3);
+  font-weight: 600;
+}
+
+.numInput {
+  width: 56px;
+  font-size: 10px;
+  font-family: var(--mono);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 4px;
+  color: var(--text);
+  outline: none;
+  text-align: right;
+}
+.numInput:focus {
+  border-color: var(--info);
+}
+
+.colorInput {
+  width: 28px;
+  height: 20px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.selectInput {
+  font-size: 10px;
+  font-family: var(--sans);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 4px;
+  color: var(--text);
+  outline: none;
+}
+
+.slider {
+  flex: 1;
+  height: 4px;
+  min-width: 0;
+}
+
+.propValue {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text3);
+  width: 28px;
+  text-align: right;
+  flex-shrink: 0;
+}

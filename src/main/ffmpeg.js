@@ -14,10 +14,12 @@ function probeVideo(filePath) {
     ffmpeg.ffprobe(filePath, (err, metadata) => {
       if (err) return reject(err)
       const video = metadata.streams.find((s) => s.codec_type === 'video')
+      const audio = metadata.streams.find((s) => s.codec_type === 'audio')
       resolve({
         width: video?.width || 1920,
         height: video?.height || 1080,
-        duration: parseFloat(metadata.format.duration) || 0
+        duration: parseFloat(metadata.format.duration) || 0,
+        hasAudio: !!audio
       })
     })
   })
@@ -37,28 +39,37 @@ export function generateThumbnail(videoPath, outputPath) {
   })
 }
 
+/** Extract audio from video as WAV (for transcription) */
+export function extractAudio(videoPath, outputPath) {
+  return new Promise((resolve, reject) => {
+    ffmpeg(videoPath)
+      .noVideo()
+      .audioCodec('pcm_s16le')
+      .audioFrequency(16000)
+      .audioChannels(1)
+      .output(outputPath)
+      .on('end', () => resolve(outputPath))
+      .on('error', (err) => reject(err))
+      .run()
+  })
+}
+
 /**
  * Compute the "keep" segments from trim + cuts.
- * Returns sorted, non-overlapping time ranges that should be included in the export.
  */
 function computeKeepSegments(trimStart, trimEnd, cuts) {
-  // Start with the full trimmed range
   let segments = [{ start: trimStart, end: trimEnd }]
 
   if (!cuts || cuts.length === 0) return segments
 
-  // Sort cuts by start time
   const sortedCuts = [...cuts].sort((a, b) => a.start - b.start)
 
-  // Remove each cut from segments
   for (const cut of sortedCuts) {
     const newSegments = []
     for (const seg of segments) {
       if (cut.end <= seg.start || cut.start >= seg.end) {
-        // Cut doesn't overlap this segment
         newSegments.push(seg)
       } else {
-        // Cut overlaps — split the segment
         if (cut.start > seg.start) {
           newSegments.push({ start: seg.start, end: cut.start })
         }
@@ -70,8 +81,27 @@ function computeKeepSegments(trimStart, trimEnd, cuts) {
     segments = newSegments
   }
 
-  // Filter out tiny segments (< 0.1s)
   return segments.filter((s) => s.end - s.start >= 0.1)
+}
+
+/**
+ * Compute the effective timestamp in the output video for a given source timestamp.
+ * Used to map text/image layer timing through cuts.
+ */
+function mapTimeToOutput(sourceTime, keepSegments) {
+  let outputTime = 0
+  for (const seg of keepSegments) {
+    if (sourceTime <= seg.start) return outputTime
+    if (sourceTime <= seg.end) {
+      return outputTime + (sourceTime - seg.start)
+    }
+    outputTime += (seg.end - seg.start)
+  }
+  return outputTime
+}
+
+function computeOutputDuration(keepSegments) {
+  return keepSegments.reduce((sum, seg) => sum + (seg.end - seg.start), 0)
 }
 
 export async function exportMp4(projectPath, project, onProgress) {
@@ -80,7 +110,6 @@ export async function exportMp4(projectPath, project, onProgress) {
     throw new Error('Screen recording not found')
   }
 
-  // Get screen dimensions to compute webcam pixel size
   const screenInfo = await probeVideo(screenPath)
 
   const edit = project.edit || {}
@@ -88,6 +117,11 @@ export async function exportMp4(projectPath, project, onProgress) {
   const trimEnd = edit.trimEnd || project.duration || screenInfo.duration || 0
   const speed = edit.speed || 1.0
   const cuts = edit.cuts || []
+  const crop = edit.crop || {}
+  const textLayers = edit.textLayers || []
+  const imageLayers = edit.imageLayers || []
+  const audioLayers = edit.audioLayers || []
+  const captions = edit.captions || []
 
   const outputDir = join(projectPath, 'exports')
   await mkdir(outputDir, { recursive: true })
@@ -99,7 +133,6 @@ export async function exportMp4(projectPath, project, onProgress) {
     : null
   const hasWebcam = webcamPath && existsSync(webcamPath)
 
-  // Compute keep segments (trimmed range minus cuts)
   const keepSegments = computeKeepSegments(trimStart, trimEnd, cuts)
   if (keepSegments.length === 0) {
     throw new Error('Nothing to export — all content has been cut')
@@ -107,72 +140,134 @@ export async function exportMp4(projectPath, project, onProgress) {
 
   const hasCuts = keepSegments.length > 1 || cuts.length > 0
   const hasSpeed = speed !== 1.0
+  const hasCrop = crop.enabled && crop.aspectRatio !== 'original'
+  const outputDuration = computeOutputDuration(keepSegments) / speed
+
+  // Collect image/audio asset input files
+  const imageAssetInputs = []
+  for (const layer of imageLayers) {
+    const assetPath = join(projectPath, 'assets', layer.file)
+    if (existsSync(assetPath)) {
+      imageAssetInputs.push({ layer, path: assetPath })
+    }
+  }
+
+  const audioAssetInputs = []
+  for (const layer of audioLayers) {
+    const assetPath = join(projectPath, 'assets', layer.file)
+    if (existsSync(assetPath)) {
+      audioAssetInputs.push({ layer, path: assetPath })
+    }
+  }
 
   return new Promise((resolve, reject) => {
     let command = ffmpeg()
 
-    // Input 0: screen recording (no seeking — we handle trim/cuts in filters)
+    // Input 0: screen recording
     command = command.input(screenPath)
 
     // Input 1: webcam (if present)
+    let nextInputIdx = 1
+    let webcamInputIdx = -1
     if (hasWebcam) {
       command = command.input(webcamPath)
+      webcamInputIdx = nextInputIdx
+      nextInputIdx++
+    }
+
+    // Image inputs
+    const imageInputMap = []
+    for (const { path } of imageAssetInputs) {
+      command = command.input(path)
+      imageInputMap.push(nextInputIdx)
+      nextInputIdx++
+    }
+
+    // Audio inputs
+    const audioInputMap = []
+    for (const { path } of audioAssetInputs) {
+      command = command.input(path)
+      audioInputMap.push(nextInputIdx)
+      nextInputIdx++
     }
 
     // Build the complex filter chain
     const filters = []
     let videoOut, audioOut
 
+    // ── Step 1: Trim/cut screen video ──
     if (hasCuts) {
-      // Multiple segments: trim each, then concat
       const vParts = []
       const aParts = []
 
       keepSegments.forEach((seg, i) => {
-        // Video segment
         filters.push(`[0:v]trim=start=${seg.start}:end=${seg.end},setpts=PTS-STARTPTS[sv${i}]`)
         vParts.push(`[sv${i}]`)
 
-        // Audio segment (if audio exists)
-        filters.push(`[0:a]atrim=start=${seg.start}:end=${seg.end},asetpts=PTS-STARTPTS[sa${i}]`)
-        aParts.push(`[sa${i}]`)
+        if (screenInfo.hasAudio) {
+          filters.push(`[0:a]atrim=start=${seg.start}:end=${seg.end},asetpts=PTS-STARTPTS[sa${i}]`)
+          aParts.push(`[sa${i}]`)
+        }
       })
 
       if (keepSegments.length > 1) {
         filters.push(`${vParts.join('')}concat=n=${keepSegments.length}:v=1:a=0[sv_concat]`)
-        filters.push(`${aParts.join('')}concat=n=${keepSegments.length}:v=0:a=1[sa_concat]`)
         videoOut = 'sv_concat'
-        audioOut = 'sa_concat'
+        if (screenInfo.hasAudio) {
+          filters.push(`${aParts.join('')}concat=n=${keepSegments.length}:v=0:a=1[sa_concat]`)
+          audioOut = 'sa_concat'
+        }
       } else {
-        videoOut = `sv0`
-        audioOut = `sa0`
+        videoOut = 'sv0'
+        if (screenInfo.hasAudio) audioOut = 'sa0'
       }
     } else {
-      // Simple trim (no cuts)
       filters.push(`[0:v]trim=start=${trimStart}:end=${trimEnd},setpts=PTS-STARTPTS[sv_trim]`)
-      filters.push(`[0:a]atrim=start=${trimStart}:end=${trimEnd},asetpts=PTS-STARTPTS[sa_trim]`)
       videoOut = 'sv_trim'
-      audioOut = 'sa_trim'
+      if (screenInfo.hasAudio) {
+        filters.push(`[0:a]atrim=start=${trimStart}:end=${trimEnd},asetpts=PTS-STARTPTS[sa_trim]`)
+        audioOut = 'sa_trim'
+      }
     }
 
-    // Apply speed change if needed
+    // If no audio in source, generate silent audio
+    if (!screenInfo.hasAudio) {
+      const silenceDuration = computeOutputDuration(keepSegments)
+      filters.push(`aevalsrc=0:d=${silenceDuration}[sa_silence]`)
+      audioOut = 'sa_silence'
+    }
+
+    // ── Step 2: Speed ──
     if (hasSpeed) {
       filters.push(`[${videoOut}]setpts=PTS/${speed}[sv_speed]`)
       videoOut = 'sv_speed'
-      // For audio tempo: atempo only supports 0.5-100.0 range
-      // For speeds outside this, chain multiple atempo filters
       const tempoFilters = buildTempoChain(speed)
       filters.push(`[${audioOut}]${tempoFilters}[sa_speed]`)
       audioOut = 'sa_speed'
     }
 
-    // Webcam overlay
+    // ── Step 3: Crop ──
+    if (hasCrop) {
+      const cropW = Math.round(screenInfo.width * crop.width)
+      const cropH = Math.round(screenInfo.height * crop.height)
+      const cropX = Math.round(screenInfo.width * crop.x)
+      const cropY = Math.round(screenInfo.height * crop.y)
+      // Ensure even dimensions
+      const cw = cropW % 2 === 0 ? cropW : cropW - 1
+      const ch = cropH % 2 === 0 ? cropH : cropH - 1
+      filters.push(`[${videoOut}]crop=${cw}:${ch}:${cropX}:${cropY}[sv_crop]`)
+      videoOut = 'sv_crop'
+    }
+
+    // ── Step 4: Webcam overlay ──
     if (hasWebcam) {
       const size = edit.webcamSize || 0.2
       const pos = edit.webcamPosition || 'bottom-right'
       const shape = edit.webcamShape || 'circle'
 
-      const wcPixels = Math.round(screenInfo.width * size)
+      // Use crop dimensions if cropping, otherwise screen dimensions
+      const refWidth = hasCrop ? Math.round(screenInfo.width * crop.width) : screenInfo.width
+      const wcPixels = Math.round(refWidth * size)
       const wcSize = wcPixels % 2 === 0 ? wcPixels : wcPixels + 1
 
       let overlayX, overlayY
@@ -183,11 +278,10 @@ export async function exportMp4(projectPath, project, onProgress) {
         default:            overlayX = 'W-w-20'; overlayY = 'H-h-20'; break
       }
 
-      // Compute webcam keep segments (same timing as screen, relative to webcam start)
       if (hasCuts) {
         const wcParts = []
         keepSegments.forEach((seg, i) => {
-          filters.push(`[1:v]trim=start=${seg.start}:end=${seg.end},setpts=PTS-STARTPTS[wv${i}]`)
+          filters.push(`[${webcamInputIdx}:v]trim=start=${seg.start}:end=${seg.end},setpts=PTS-STARTPTS[wv${i}]`)
           wcParts.push(`[wv${i}]`)
         })
         if (keepSegments.length > 1) {
@@ -197,19 +291,99 @@ export async function exportMp4(projectPath, project, onProgress) {
           filters.push(buildWebcamFilter('wv0', shape, wcSize, 'wc'))
         }
       } else {
-        // Simple trim for webcam
-        filters.push(`[1:v]trim=start=${trimStart}:end=${trimEnd},setpts=PTS-STARTPTS[wv_trim]`)
+        filters.push(`[${webcamInputIdx}:v]trim=start=${trimStart}:end=${trimEnd},setpts=PTS-STARTPTS[wv_trim]`)
         filters.push(buildWebcamFilter('wv_trim', shape, wcSize, 'wc'))
       }
 
-      // Apply speed to webcam if needed
       if (hasSpeed) {
         filters.push(`[wc]setpts=PTS/${speed}[wc_speed]`)
-        filters.push(`[${videoOut}][wc_speed]overlay=${overlayX}:${overlayY}[vout]`)
+        filters.push(`[${videoOut}][wc_speed]overlay=${overlayX}:${overlayY}[vwc]`)
       } else {
-        filters.push(`[${videoOut}][wc]overlay=${overlayX}:${overlayY}[vout]`)
+        filters.push(`[${videoOut}][wc]overlay=${overlayX}:${overlayY}[vwc]`)
       }
-      videoOut = 'vout'
+      videoOut = 'vwc'
+    }
+
+    // ── Step 5: Image overlays ──
+    for (let i = 0; i < imageAssetInputs.length; i++) {
+      const { layer } = imageAssetInputs[i]
+      const inputIdx = imageInputMap[i]
+
+      // Scale image to percentage of video width
+      const imgWidth = Math.round((hasCrop ? screenInfo.width * crop.width : screenInfo.width) * (layer.width || 0.15))
+      const imgW = imgWidth % 2 === 0 ? imgWidth : imgWidth + 1
+
+      // Compute position in pixels
+      const posX = Math.round((hasCrop ? screenInfo.width * crop.width : screenInfo.width) * (layer.x || 0))
+      const posY = Math.round((hasCrop ? screenInfo.height * crop.height : screenInfo.height) * (layer.y || 0))
+
+      // Map timing through cuts + speed
+      const startTime = layer.startTime || 0
+      const endTime = layer.endTime || outputDuration
+      const outStart = mapTimeToOutput(startTime, keepSegments) / speed
+      const outEnd = layer.endTime != null ? mapTimeToOutput(endTime, keepSegments) / speed : outputDuration
+
+      const label = `img${i}`
+      filters.push(`[${inputIdx}:v]scale=${imgW}:-1[${label}_s]`)
+      filters.push(`[${videoOut}][${label}_s]overlay=${posX}:${posY}:enable='between(t,${outStart.toFixed(3)},${outEnd.toFixed(3)})'[${label}_out]`)
+      videoOut = `${label}_out`
+    }
+
+    // ── Step 6: Text overlays (captions + text layers) ──
+    const allTextItems = [
+      ...textLayers.map((t) => ({ ...t, type: 'text' })),
+      ...captions.map((c) => ({ ...c, type: 'caption', x: 0.5, y: 0.9, fontSize: c.fontSize || 20, color: c.color || '#ffffff', background: c.background || 'black@0.5' }))
+    ]
+
+    for (let i = 0; i < allTextItems.length; i++) {
+      const item = allTextItems[i]
+      const outStart = mapTimeToOutput(item.startTime || 0, keepSegments) / speed
+      const outEnd = item.endTime != null ? mapTimeToOutput(item.endTime, keepSegments) / speed : outputDuration
+
+      // Escape text for FFmpeg drawtext
+      const escapedText = (item.text || '').replace(/'/g, "\\'").replace(/:/g, '\\:').replace(/\\/g, '\\\\')
+
+      const fontSize = item.fontSize || 24
+      const color = item.color || 'white'
+      // Position: x and y are 0-1 fractions
+      const xExpr = item.type === 'caption' ? '(w-text_w)/2' : `w*${item.x || 0.5}-text_w/2`
+      const yExpr = item.type === 'caption' ? `h*${item.y || 0.9}-text_h` : `h*${item.y || 0.5}-text_h/2`
+
+      let drawtext = `drawtext=text='${escapedText}':fontsize=${fontSize}:fontcolor=${color}:x=${xExpr}:y=${yExpr}`
+
+      // Background box for captions
+      if (item.background || item.type === 'caption') {
+        drawtext += `:box=1:boxcolor=${item.background || 'black@0.5'}:boxborderw=8`
+      }
+
+      if (item.fontWeight === 'bold') {
+        drawtext += ':font=Arial Bold'
+      }
+
+      drawtext += `:enable='between(t,${outStart.toFixed(3)},${outEnd.toFixed(3)})'`
+
+      const label = `txt${i}`
+      filters.push(`[${videoOut}]${drawtext}[${label}]`)
+      videoOut = label
+    }
+
+    // ── Step 7: Audio mixing ──
+    if (audioAssetInputs.length > 0) {
+      // Mix imported audio layers with original audio
+      const audioLabels = [`[${audioOut}]`]
+      for (let i = 0; i < audioAssetInputs.length; i++) {
+        const { layer } = audioAssetInputs[i]
+        const inputIdx = audioInputMap[i]
+        const vol = layer.volume != null ? layer.volume : 0.3
+        const delay = Math.round((layer.startTime || 0) * 1000) // adelay uses ms
+
+        const label = `aud${i}`
+        filters.push(`[${inputIdx}:a]volume=${vol},adelay=${delay}|${delay}[${label}]`)
+        audioLabels.push(`[${label}]`)
+      }
+
+      filters.push(`${audioLabels.join('')}amix=inputs=${audioLabels.length}:duration=first:dropout_transition=2[amixed]`)
+      audioOut = 'amixed'
     }
 
     command = command.complexFilter(filters.join(';'))
@@ -259,7 +433,10 @@ export async function exportGif(projectPath, project, onProgress) {
   const trimEnd = edit.trimEnd || project.duration || 0
   const speed = edit.speed || 1.0
   const cuts = edit.cuts || []
-  const duration = trimEnd - trimStart
+  const crop = edit.crop || {}
+  const hasCrop = crop.enabled && crop.aspectRatio !== 'original'
+
+  const screenInfo = await probeVideo(screenPath)
 
   const outputDir = join(projectPath, 'exports')
   await mkdir(outputDir, { recursive: true })
@@ -272,13 +449,9 @@ export async function exportGif(projectPath, project, onProgress) {
     throw new Error('Nothing to export — all content has been cut')
   }
 
-  // GIF export: two-pass for quality (palettegen + paletteuse)
-  // Scale to max 640px wide, 15fps for reasonable file size
-
   return new Promise((resolve, reject) => {
     // Pass 1: Generate palette
     let cmd1 = ffmpeg().input(screenPath)
-
     const filters1 = []
     let videoLabel
 
@@ -298,6 +471,15 @@ export async function exportGif(projectPath, project, onProgress) {
       videoLabel = 'gspeed'
     }
 
+    if (hasCrop) {
+      const cw = Math.round(screenInfo.width * crop.width)
+      const ch = Math.round(screenInfo.height * crop.height)
+      const cx = Math.round(screenInfo.width * crop.x)
+      const cy = Math.round(screenInfo.height * crop.y)
+      filters1.push(`[${videoLabel}]crop=${cw - cw % 2}:${ch - ch % 2}:${cx}:${cy}[gcrop]`)
+      videoLabel = 'gcrop'
+    }
+
     filters1.push(`[${videoLabel}]fps=15,scale=640:-2:flags=lanczos[gscaled]`)
     filters1.push(`[gscaled]palettegen=stats_mode=diff[pal]`)
 
@@ -311,10 +493,7 @@ export async function exportGif(projectPath, project, onProgress) {
         if (onProgress) onProgress(50)
 
         // Pass 2: Generate GIF using palette
-        let cmd2 = ffmpeg()
-          .input(screenPath)
-          .input(palettePath)
-
+        let cmd2 = ffmpeg().input(screenPath).input(palettePath)
         const filters2 = []
         let vLabel2
 
@@ -334,6 +513,15 @@ export async function exportGif(projectPath, project, onProgress) {
           vLabel2 = 'gspeed2'
         }
 
+        if (hasCrop) {
+          const cw = Math.round(screenInfo.width * crop.width)
+          const ch = Math.round(screenInfo.height * crop.height)
+          const cx = Math.round(screenInfo.width * crop.x)
+          const cy = Math.round(screenInfo.height * crop.y)
+          filters2.push(`[${vLabel2}]crop=${cw - cw % 2}:${ch - ch % 2}:${cx}:${cy}[gcrop2]`)
+          vLabel2 = 'gcrop2'
+        }
+
         filters2.push(`[${vLabel2}]fps=15,scale=640:-2:flags=lanczos[gscaled2]`)
         filters2.push(`[gscaled2][1:v]paletteuse=dither=bayer:bayer_scale=5[gifout]`)
 
@@ -349,7 +537,6 @@ export async function exportGif(projectPath, project, onProgress) {
           })
           .on('end', () => {
             console.log('GIF export complete:', outputPath)
-            // Clean up palette file
             try { require('fs').unlinkSync(palettePath) } catch {}
             resolve(outputPath)
           })
@@ -378,7 +565,6 @@ function buildTempoChain(speed) {
   if (speed >= 0.5 && speed <= 2.0) {
     return `atempo=${speed}`
   }
-  // Chain multiple atempo filters for extreme speeds
   const parts = []
   let remaining = speed
   while (remaining > 2.0) {

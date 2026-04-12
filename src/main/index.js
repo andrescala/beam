@@ -10,9 +10,13 @@ import {
   saveProject,
   listProjects,
   deleteProject,
-  saveRawRecording
+  saveRawRecording,
+  importAsset,
+  exportSrt,
+  exportProjectZip,
+  importProjectZip
 } from './projects.js'
-import { generateThumbnail, exportMp4, exportGif } from './ffmpeg.js'
+import { generateThumbnail, exportMp4, exportGif, extractAudio } from './ffmpeg.js'
 import { getPreferences, setPreferences } from './preferences.js'
 
 let mainWindow = null
@@ -103,15 +107,10 @@ function registerIpcHandlers() {
         ? 'granted' : 'denied'
     }
 
-    // For screen recording on macOS: we must actually attempt desktopCapturer
-    // to make the app appear in System Settings > Screen Recording list.
-    // Just checking getMediaAccessStatus won't trigger it.
     let screen = systemPreferences.getMediaAccessStatus('screen')
     if (screen !== 'granted') {
       try {
-        // This attempt is what makes macOS add the app to the Screen Recording list
         await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1, height: 1 } })
-        // Re-check after the attempt
         screen = systemPreferences.getMediaAccessStatus('screen')
       } catch {
         // Expected to fail if permission not yet granted
@@ -161,6 +160,23 @@ function registerIpcHandlers() {
     return await saveRawRecording(projectId, type, buffer)
   })
 
+  // Asset import (images, audio files)
+  ipcMain.handle('import-asset', async (_event, projectId, type) => {
+    const filters = type === 'audio'
+      ? [{ name: 'Audio Files', extensions: ['mp3', 'wav', 'aac', 'm4a', 'ogg'] }]
+      : [{ name: 'Image Files', extensions: ['png', 'jpg', 'jpeg', 'svg', 'gif', 'webp'] }]
+
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openFile'],
+      filters
+    })
+
+    if (result.canceled || result.filePaths.length === 0) return null
+
+    const asset = await importAsset(projectId, result.filePaths[0])
+    return asset
+  })
+
   // Processing
   ipcMain.handle('process-recording', async (_event, projectId, format) => {
     try {
@@ -207,6 +223,77 @@ function registerIpcHandlers() {
     }
   })
 
+  // SRT export
+  ipcMain.handle('export-srt', async (_event, projectId) => {
+    try {
+      const outputPath = await exportSrt(projectId)
+      return { path: outputPath }
+    } catch (err) {
+      return { error: err.message }
+    }
+  })
+
+  // Project backup/import
+  ipcMain.handle('export-project-zip', async (_event, projectId) => {
+    try {
+      const result = await dialog.showSaveDialog(mainWindow, {
+        defaultPath: `project.beamproject`,
+        filters: [{ name: 'Beam Project', extensions: ['beamproject'] }]
+      })
+      if (result.canceled) return null
+
+      const project = await loadProject(projectId)
+      const projectPath = getProjectPath(projectId)
+
+      // Build archive
+      const { readdir: rd, readFile: rf } = await import('fs/promises')
+      const files = {}
+      await collectFilesForArchive(projectPath, projectPath, files, rf, rd)
+
+      const archive = { version: 1, files: {} }
+      for (const [relativePath, data] of Object.entries(files)) {
+        archive.files[relativePath] = data.toString('base64')
+      }
+
+      const { writeFile: wf } = await import('fs/promises')
+      await wf(result.filePath, JSON.stringify(archive))
+
+      return { path: result.filePath }
+    } catch (err) {
+      return { error: err.message }
+    }
+  })
+
+  ipcMain.handle('import-project-zip', async () => {
+    try {
+      const result = await dialog.showOpenDialog(mainWindow, {
+        properties: ['openFile'],
+        filters: [{ name: 'Beam Project', extensions: ['beamproject'] }]
+      })
+      if (result.canceled || result.filePaths.length === 0) return null
+
+      const project = await importProjectZip(result.filePaths[0])
+      return { project }
+    } catch (err) {
+      return { error: err.message }
+    }
+  })
+
+  // Extract audio for transcription
+  ipcMain.handle('extract-audio', async (_event, projectId) => {
+    try {
+      const project = await loadProject(projectId)
+      const projectPath = getProjectPath(projectId)
+      const screenPath = join(projectPath, project.recordings.screen)
+      const outputPath = join(projectPath, 'audio.wav')
+
+      await extractAudio(screenPath, outputPath)
+      return { path: outputPath }
+    } catch (err) {
+      return { error: err.message }
+    }
+  })
+
   // Dialogs
   ipcMain.handle('save-dialog', async (_event, options) => {
     const result = await dialog.showSaveDialog(mainWindow, {
@@ -230,10 +317,23 @@ function registerIpcHandlers() {
   })
 }
 
+async function collectFilesForArchive(basePath, currentPath, files, rf, rd) {
+  const entries = await rd(currentPath, { withFileTypes: true })
+  for (const entry of entries) {
+    const fullPath = join(currentPath, entry.name)
+    const relativePath = fullPath.slice(basePath.length + 1)
+    if (entry.isDirectory()) {
+      if (entry.name === 'exports') continue // Skip exports to keep archive smaller
+      await collectFilesForArchive(basePath, fullPath, files, rf, rd)
+    } else {
+      files[relativePath] = await rf(fullPath)
+    }
+  }
+}
+
 // ── App lifecycle ──
 
 // Register custom protocol for serving project files to the renderer.
-// MUST be called before app 'ready' event. Usage: project-file://{projectId}/{filename}
 protocol.registerSchemesAsPrivileged([
   {
     scheme: 'project-file',
@@ -258,10 +358,9 @@ if (!gotTheLock) {
 
     // Handle project-file:// protocol
     protocol.handle('project-file', async (request) => {
-      // URL format: project-file://projectId/filename
       const url = new URL(request.url)
       const projectId = url.hostname
-      const filename = decodeURIComponent(url.pathname.slice(1)) // remove leading /
+      const filename = decodeURIComponent(url.pathname.slice(1))
       const filePath = join(getProjectPath(projectId), filename)
 
       try {
@@ -273,8 +372,14 @@ if (!gotTheLock) {
           jpg: 'image/jpeg',
           jpeg: 'image/jpeg',
           png: 'image/png',
+          gif: 'image/gif',
+          svg: 'image/svg+xml',
+          webp: 'image/webp',
           mp3: 'audio/mpeg',
-          wav: 'audio/wav'
+          wav: 'audio/wav',
+          aac: 'audio/aac',
+          m4a: 'audio/mp4',
+          ogg: 'audio/ogg'
         }
         return new Response(data, {
           headers: { 'Content-Type': mimeTypes[ext] || 'application/octet-stream' }
@@ -292,19 +397,15 @@ if (!gotTheLock) {
     await ensureProjectsDir()
     registerIpcHandlers()
 
-    // Modern screen capture: renderer calls getDisplayMedia(), this handler
-    // intercepts it and provides the source the user picked in our UI.
     session.defaultSession.setDisplayMediaRequestHandler(async (_request, callback) => {
       try {
         const sources = await desktopCapturer.getSources({
           types: ['window', 'screen']
         })
-        // Find the source the user selected via our picker
         const selected = sources.find((s) => s.id === pendingSourceId)
         if (selected) {
           callback({ video: selected, audio: 'loopback' })
         } else if (sources.length > 0) {
-          // Fallback: use the first screen
           callback({ video: sources[0], audio: 'loopback' })
         } else {
           callback({})

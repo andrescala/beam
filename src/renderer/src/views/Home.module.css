@@ -28,6 +28,27 @@
   font-weight: 600;
 }
 
+.headerRight {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.importBtn {
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border2);
+  background: transparent;
+  color: var(--text2);
+  cursor: pointer;
+  font-family: var(--sans);
+}
+.importBtn:hover {
+  background: var(--bg3);
+  color: var(--text);
+}
+
 .newBtn {
   font-size: 13px;
   font-weight: 600;

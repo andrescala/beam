@@ -48,15 +48,35 @@ function Home() {
     }
   }
 
+  async function handleImportProject() {
+    try {
+      const result = await window.electronAPI.importProjectZip()
+      if (!result) return
+      if (result.error) {
+        showToast('error', result.error)
+        return
+      }
+      showToast('success', `Imported: ${result.project.name}`)
+      loadProjects()
+    } catch (err) {
+      showToast('error', 'Failed to import project')
+    }
+  }
+
   return (
     <div className={styles.container}>
       <header className={styles.header + ' titlebar-drag'}>
         <div className={styles.headerLeft}>
           <h1 className={styles.title}>Beam</h1>
         </div>
-        <button className={styles.newBtn} onClick={() => navigate('/recorder')}>
-          New Recording
-        </button>
+        <div className={styles.headerRight}>
+          <button className={styles.importBtn} onClick={handleImportProject}>
+            Import
+          </button>
+          <button className={styles.newBtn} onClick={() => navigate('/recorder')}>
+            New Recording
+          </button>
+        </div>
       </header>
 
       <main className={styles.main}>
