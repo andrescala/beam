@@ -177,6 +177,41 @@
   color: var(--info);
 }
 
+.kfItem {
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+  margin-top: 8px;
+}
+.kfItem:first-of-type {
+  margin-top: 10px;
+}
+
+.removeKfBtn {
+  width: 100%;
+  padding: 4px;
+  font-size: 10px;
+  font-family: var(--sans);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--danger);
+  cursor: pointer;
+  margin-top: 4px;
+}
+.removeKfBtn:hover {
+  background: rgba(226, 75, 74, 0.1);
+}
+
+.colorInput {
+  width: 32px;
+  height: 24px;
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+  padding: 1px;
+}
+
 .backupBtn {
   width: 100%;
   padding: 6px;

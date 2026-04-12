@@ -12,11 +12,12 @@ import {
   deleteProject,
   saveRawRecording,
   importAsset,
+  listAssets,
+  deleteAsset,
   exportSrt,
-  exportProjectZip,
   importProjectZip
 } from './projects.js'
-import { generateThumbnail, exportMp4, exportGif, extractAudio } from './ffmpeg.js'
+import { generateThumbnail, exportMp4, exportGif, extractAudio, detectSilence } from './ffmpeg.js'
 import { getPreferences, setPreferences } from './preferences.js'
 
 let mainWindow = null
@@ -177,6 +178,24 @@ function registerIpcHandlers() {
     return asset
   })
 
+  // Asset library
+  ipcMain.handle('list-assets', async (_event, projectId) => {
+    try {
+      return await listAssets(projectId)
+    } catch (err) {
+      return []
+    }
+  })
+
+  ipcMain.handle('delete-asset', async (_event, projectId, filename) => {
+    try {
+      await deleteAsset(projectId, filename)
+      return true
+    } catch (err) {
+      return false
+    }
+  })
+
   // Processing
   ipcMain.handle('process-recording', async (_event, projectId, format) => {
     try {
@@ -279,6 +298,20 @@ function registerIpcHandlers() {
     }
   })
 
+  // Detect silence in recording
+  ipcMain.handle('detect-silence', async (_event, projectId, threshold, minDuration) => {
+    try {
+      const project = await loadProject(projectId)
+      const projectPath = getProjectPath(projectId)
+      const screenPath = join(projectPath, project.recordings.screen)
+
+      const silences = await detectSilence(screenPath, threshold || -30, minDuration || 0.5)
+      return { silences }
+    } catch (err) {
+      return { error: err.message }
+    }
+  })
+
   // Extract audio for transcription
   ipcMain.handle('extract-audio', async (_event, projectId) => {
     try {
@@ -361,7 +394,15 @@ if (!gotTheLock) {
       const url = new URL(request.url)
       const projectId = url.hostname
       const filename = decodeURIComponent(url.pathname.slice(1))
-      const filePath = join(getProjectPath(projectId), filename)
+      const projectDir = getProjectPath(projectId)
+      const filePath = join(projectDir, filename)
+
+      // Prevent path traversal — resolved path must stay inside project directory
+      const { resolve } = await import('path')
+      const resolved = resolve(filePath)
+      if (!resolved.startsWith(resolve(projectDir))) {
+        return new Response('Forbidden', { status: 403 })
+      }
 
       try {
         const data = await readFile(filePath)

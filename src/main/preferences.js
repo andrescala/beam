@@ -10,7 +10,8 @@ const schema = {
   windowBounds: {
     type: 'object',
     default: { width: 1200, height: 800 }
-  }
+  },
+  hasSeenWelcome: { type: 'boolean', default: false }
 }
 
 const store = new Store({ schema })

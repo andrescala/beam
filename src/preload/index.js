@@ -20,11 +20,15 @@ const electronAPI = {
 
   // Assets
   importAsset: (projectId, type) => ipcRenderer.invoke('import-asset', projectId, type),
+  listAssets: (projectId) => ipcRenderer.invoke('list-assets', projectId),
+  deleteAsset: (projectId, filename) => ipcRenderer.invoke('delete-asset', projectId, filename),
 
   // Processing
   processRecording: (projectId, format) => ipcRenderer.invoke('process-recording', projectId, format),
   generateThumbnail: (projectId) => ipcRenderer.invoke('generate-thumbnail', projectId),
   extractAudio: (projectId) => ipcRenderer.invoke('extract-audio', projectId),
+  detectSilence: (projectId, threshold, minDuration) =>
+    ipcRenderer.invoke('detect-silence', projectId, threshold, minDuration),
 
   // SRT export
   exportSrt: (projectId) => ipcRenderer.invoke('export-srt', projectId),

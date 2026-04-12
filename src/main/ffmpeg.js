@@ -1,7 +1,7 @@
 import ffmpeg from 'fluent-ffmpeg'
 import ffmpegStatic from 'ffmpeg-static'
 import { join } from 'path'
-import { existsSync } from 'fs'
+import { existsSync, unlinkSync } from 'fs'
 import { mkdir } from 'fs/promises'
 
 // Fix path for asar packaging
@@ -122,6 +122,11 @@ export async function exportMp4(projectPath, project, onProgress) {
   const imageLayers = edit.imageLayers || []
   const audioLayers = edit.audioLayers || []
   const captions = edit.captions || []
+  const introCard = edit.introCard || null
+  const outroCard = edit.outroCard || null
+  const backgroundBlur = edit.backgroundBlur || null
+  const cursorSpotlight = edit.cursorSpotlight || null
+  const zoomKeyframes = edit.zoomKeyframes || []
 
   const outputDir = join(projectPath, 'exports')
   await mkdir(outputDir, { recursive: true })
@@ -259,6 +264,73 @@ export async function exportMp4(projectPath, project, onProgress) {
       videoOut = 'sv_crop'
     }
 
+    // ── Step 3b: Background blur ──
+    if (backgroundBlur && backgroundBlur.enabled) {
+      const blurStrength = backgroundBlur.strength || 10
+      // Apply box blur (luma + chroma)
+      filters.push(`[${videoOut}]boxblur=${blurStrength}:${blurStrength}[sv_blur]`)
+      videoOut = 'sv_blur'
+    }
+
+    // ── Step 3c: Cursor spotlight (vignette) ──
+    if (cursorSpotlight && cursorSpotlight.enabled) {
+      const intensity = cursorSpotlight.intensity || 0.4
+      // vignette: angle is PI/2 * intensity, larger = more darkening at edges
+      const angle = `PI/2*${intensity}`
+      filters.push(`[${videoOut}]vignette=${angle}[sv_vig]`)
+      videoOut = 'sv_vig'
+    }
+
+    // ── Step 3d: Zoom keyframes ──
+    if (zoomKeyframes.length > 0) {
+      // Apply zoom using zoompan filter
+      // Each keyframe: { time, x, y, zoom, duration }
+      // Build a zoompan expression that interpolates between keyframes
+      const sorted = [...zoomKeyframes].sort((a, b) => a.time - b.time)
+      const fps = 30
+      const zoomExprs = []
+      const xExprs = []
+      const yExprs = []
+
+      for (const kf of sorted) {
+        // Map keyframe timing through cuts + speed
+        const mappedStart = mapTimeToOutput(kf.time || 0, keepSegments) / speed
+        const mappedEnd = mapTimeToOutput((kf.time || 0) + (kf.duration || 2), keepSegments) / speed
+        const startFrame = Math.round(mappedStart * fps)
+        const endFrame = Math.round(mappedEnd * fps)
+        const z = kf.zoom || 1.5
+        const cx = kf.x != null ? kf.x : 0.5
+        const cy = kf.y != null ? kf.y : 0.5
+
+        // Smooth zoom in then out over the keyframe duration
+        zoomExprs.push(
+          `if(between(on,${startFrame},${endFrame}),` +
+          `1+(${z}-1)*sin((on-${startFrame})/(${endFrame}-${startFrame})*PI),`
+        )
+        xExprs.push(
+          `if(between(on,${startFrame},${endFrame}),` +
+          `(iw-iw/zoom)*${cx},`
+        )
+        yExprs.push(
+          `if(between(on,${startFrame},${endFrame}),` +
+          `(ih-ih/zoom)*${cy},`
+        )
+      }
+
+      // Default: no zoom
+      const zoomExpr = zoomExprs.join('') + '1' + ')'.repeat(zoomExprs.length)
+      const xExpr = xExprs.join('') + '0' + ')'.repeat(xExprs.length)
+      const yExpr = yExprs.join('') + '0' + ')'.repeat(yExprs.length)
+
+      const refW = hasCrop ? Math.round(screenInfo.width * crop.width) : screenInfo.width
+      const refH = hasCrop ? Math.round(screenInfo.height * crop.height) : screenInfo.height
+      const zw = refW % 2 === 0 ? refW : refW - 1
+      const zh = refH % 2 === 0 ? refH : refH - 1
+
+      filters.push(`[${videoOut}]zoompan=z='${zoomExpr}':x='${xExpr}':y='${yExpr}':d=1:s=${zw}x${zh}:fps=${fps}[sv_zoom]`)
+      videoOut = 'sv_zoom'
+    }
+
     // ── Step 4: Webcam overlay ──
     if (hasWebcam) {
       const size = edit.webcamSize || 0.2
@@ -340,8 +412,8 @@ export async function exportMp4(projectPath, project, onProgress) {
       const outStart = mapTimeToOutput(item.startTime || 0, keepSegments) / speed
       const outEnd = item.endTime != null ? mapTimeToOutput(item.endTime, keepSegments) / speed : outputDuration
 
-      // Escape text for FFmpeg drawtext
-      const escapedText = (item.text || '').replace(/'/g, "\\'").replace(/:/g, '\\:').replace(/\\/g, '\\\\')
+      // Escape text for FFmpeg drawtext (backslashes first, then special chars)
+      const escapedText = (item.text || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/:/g, '\\:')
 
       const fontSize = item.fontSize || 24
       const color = item.color || 'white'
@@ -384,6 +456,87 @@ export async function exportMp4(projectPath, project, onProgress) {
 
       filters.push(`${audioLabels.join('')}amix=inputs=${audioLabels.length}:duration=first:dropout_transition=2[amixed]`)
       audioOut = 'amixed'
+    }
+
+    // ── Step 8: Intro/outro title cards ──
+    const finalWidth = hasCrop ? Math.round(screenInfo.width * crop.width) : screenInfo.width
+    const finalHeight = hasCrop ? Math.round(screenInfo.height * crop.height) : screenInfo.height
+    const fw = finalWidth % 2 === 0 ? finalWidth : finalWidth - 1
+    const fh = finalHeight % 2 === 0 ? finalHeight : finalHeight - 1
+
+    if (introCard || outroCard) {
+      // Ensure main content dimensions match title cards for concat
+      filters.push(`[${videoOut}]scale=${fw}:${fh}:force_original_aspect_ratio=disable[v_scaled]`)
+      videoOut = 'v_scaled'
+
+      const concatParts = []
+      const concatAudioParts = []
+      let partCount = 0
+
+      if (introCard) {
+        const dur = introCard.duration || 3
+        const bg = (introCard.bgColor || '#000000').replace('#', '')
+        const titleText = escapeDrawtext(introCard.title)
+        const subtitleText = escapeDrawtext(introCard.subtitle)
+        const titleColor = introCard.titleColor || 'white'
+        const subtitleColor = introCard.subtitleColor || 'gray'
+
+        let introFilter = `color=c=0x${bg}:s=${fw}x${fh}:d=${dur}:r=30[intro_bg]`
+        filters.push(introFilter)
+
+        let introLabel = 'intro_bg'
+        if (titleText) {
+          filters.push(`[${introLabel}]drawtext=text='${titleText}':fontsize=48:fontcolor=${titleColor}:x=(w-text_w)/2:y=(h-text_h)/2${subtitleText ? '-30' : ''}[intro_t]`)
+          introLabel = 'intro_t'
+        }
+        if (subtitleText) {
+          filters.push(`[${introLabel}]drawtext=text='${subtitleText}':fontsize=24:fontcolor=${subtitleColor}:x=(w-text_w)/2:y=(h+text_h)/2+10[intro_s]`)
+          introLabel = 'intro_s'
+        }
+
+        concatParts.push(`[${introLabel}]`)
+        // Silent audio for intro
+        filters.push(`aevalsrc=0:d=${dur}[intro_a]`)
+        concatAudioParts.push(`[intro_a]`)
+        partCount++
+      }
+
+      // Main content
+      concatParts.push(`[${videoOut}]`)
+      concatAudioParts.push(`[${audioOut}]`)
+      partCount++
+
+      if (outroCard) {
+        const dur = outroCard.duration || 3
+        const bg = (outroCard.bgColor || '#000000').replace('#', '')
+        const titleText = escapeDrawtext(outroCard.title)
+        const subtitleText = escapeDrawtext(outroCard.subtitle)
+        const titleColor = outroCard.titleColor || 'white'
+        const subtitleColor = outroCard.subtitleColor || 'gray'
+
+        let outroFilter = `color=c=0x${bg}:s=${fw}x${fh}:d=${dur}:r=30[outro_bg]`
+        filters.push(outroFilter)
+
+        let outroLabel = 'outro_bg'
+        if (titleText) {
+          filters.push(`[${outroLabel}]drawtext=text='${titleText}':fontsize=48:fontcolor=${titleColor}:x=(w-text_w)/2:y=(h-text_h)/2${subtitleText ? '-30' : ''}[outro_t]`)
+          outroLabel = 'outro_t'
+        }
+        if (subtitleText) {
+          filters.push(`[${outroLabel}]drawtext=text='${subtitleText}':fontsize=24:fontcolor=${subtitleColor}:x=(w-text_w)/2:y=(h+text_h)/2+10[outro_s]`)
+          outroLabel = 'outro_s'
+        }
+
+        concatParts.push(`[${outroLabel}]`)
+        filters.push(`aevalsrc=0:d=${dur}[outro_a]`)
+        concatAudioParts.push(`[outro_a]`)
+        partCount++
+      }
+
+      // Concat all parts
+      filters.push(`${concatParts.join('')}${concatAudioParts.join('')}concat=n=${partCount}:v=1:a=1[v_final][a_final]`)
+      videoOut = 'v_final'
+      audioOut = 'a_final'
     }
 
     command = command.complexFilter(filters.join(';'))
@@ -537,7 +690,7 @@ export async function exportGif(projectPath, project, onProgress) {
           })
           .on('end', () => {
             console.log('GIF export complete:', outputPath)
-            try { require('fs').unlinkSync(palettePath) } catch {}
+            try { unlinkSync(palettePath) } catch (e) { console.warn('Failed to clean up palette:', e.message) }
             resolve(outputPath)
           })
           .on('error', (err, stdout, stderr) => {
@@ -549,6 +702,63 @@ export async function exportGif(projectPath, project, onProgress) {
       })
       .run()
   })
+}
+
+/**
+ * Detect silent segments in a video file using FFmpeg's silencedetect filter.
+ * Returns array of { start, end } objects representing silent regions.
+ */
+export function detectSilence(videoPath, threshold = -30, minDuration = 0.5) {
+  return new Promise((resolve, reject) => {
+    const silences = []
+    let currentStart = null
+
+    ffmpeg(videoPath)
+      .audioFilters(`silencedetect=noise=${threshold}dB:d=${minDuration}`)
+      .format('null')
+      .output('-')
+      .on('stderr', (line) => {
+        // Parse silencedetect output from stderr
+        const startMatch = line.match(/silence_start:\s*([\d.]+)/)
+        const endMatch = line.match(/silence_end:\s*([\d.]+)/)
+
+        if (startMatch) {
+          currentStart = parseFloat(startMatch[1])
+        }
+        if (endMatch && currentStart !== null) {
+          silences.push({
+            start: currentStart,
+            end: parseFloat(endMatch[1])
+          })
+          currentStart = null
+        }
+      })
+      .on('end', () => {
+        // Handle trailing silence (silence_start without matching silence_end)
+        // This happens when silence extends to the end of the file
+        if (currentStart !== null) {
+          // We don't know the exact duration here, but the silence goes to the end
+          // Use a large value; the caller should clamp to actual duration
+          silences.push({ start: currentStart, end: currentStart + 9999 })
+        }
+        resolve(silences)
+      })
+      .on('error', (err) => {
+        // silencedetect on files with no audio track will error
+        if (err.message.includes('does not contain any stream') ||
+            err.message.includes('no audio')) {
+          resolve([])
+        } else {
+          reject(err)
+        }
+      })
+      .run()
+  })
+}
+
+/** Escape text for FFmpeg drawtext filter */
+function escapeDrawtext(text) {
+  return (text || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/:/g, '\\:')
 }
 
 /** Build webcam shape filter (circle or rect) */

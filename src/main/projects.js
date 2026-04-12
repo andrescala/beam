@@ -58,7 +58,9 @@ export async function createProject(name) {
       textLayers: [],
       imageLayers: [],
       audioLayers: [],
-      captions: []
+      captions: [],
+      introCard: null,
+      outroCard: null
     },
     exportSettings: {
       format: 'mp4',
@@ -76,6 +78,16 @@ export async function loadProject(id) {
   const project = JSON.parse(raw)
 
   // Migrate older projects: ensure new fields exist
+  if (!project.edit) {
+    project.edit = {
+      trimStart: 0, trimEnd: null, webcamPosition: 'bottom-right',
+      webcamSize: 0.2, webcamShape: 'circle', speed: 1.0, cuts: [],
+      crop: { enabled: false, aspectRatio: 'original', x: 0, y: 0, width: 1, height: 1 },
+      textLayers: [], imageLayers: [], audioLayers: [], captions: [],
+      introCard: null, outroCard: null, backgroundBlur: null,
+      cursorSpotlight: null, zoomKeyframes: []
+    }
+  }
   if (!project.edit.crop) {
     project.edit.crop = { enabled: false, aspectRatio: 'original', x: 0, y: 0, width: 1, height: 1 }
   }
@@ -85,6 +97,11 @@ export async function loadProject(id) {
   if (!project.edit.captions) project.edit.captions = []
   if (!project.edit.cuts) project.edit.cuts = []
   if (project.edit.speed === undefined) project.edit.speed = 1.0
+  if (project.edit.introCard === undefined) project.edit.introCard = null
+  if (project.edit.outroCard === undefined) project.edit.outroCard = null
+  if (project.edit.backgroundBlur === undefined) project.edit.backgroundBlur = null
+  if (project.edit.cursorSpotlight === undefined) project.edit.cursorSpotlight = null
+  if (project.edit.zoomKeyframes === undefined) project.edit.zoomKeyframes = []
 
   return project
 }
@@ -145,6 +162,51 @@ export async function saveRawRecording(projectId, type, buffer) {
   return filename
 }
 
+export async function listAssets(projectId) {
+  const projectPath = getProjectPath(projectId)
+  const assetsDir = join(projectPath, 'assets')
+
+  if (!existsSync(assetsDir)) return []
+
+  const entries = await readdir(assetsDir, { withFileTypes: true })
+  const assets = []
+  const imageExts = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp']
+  const audioExts = ['mp3', 'wav', 'aac', 'm4a', 'ogg']
+
+  for (const entry of entries) {
+    if (!entry.isFile()) continue
+    const ext = entry.name.split('.').pop().toLowerCase()
+    const type = imageExts.includes(ext) ? 'image' : audioExts.includes(ext) ? 'audio' : 'other'
+    const stat = await import('fs/promises').then((f) => f.stat(join(assetsDir, entry.name)))
+    assets.push({
+      filename: entry.name,
+      type,
+      ext,
+      size: stat.size,
+      createdAt: stat.birthtime.toISOString()
+    })
+  }
+
+  return assets.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+}
+
+export async function deleteAsset(projectId, filename) {
+  const projectPath = getProjectPath(projectId)
+  const { resolve } = await import('path')
+  const assetsDir = resolve(join(projectPath, 'assets'))
+  const filePath = resolve(join(assetsDir, filename))
+
+  // Path traversal protection
+  if (!filePath.startsWith(assetsDir)) {
+    throw new Error('Invalid asset path')
+  }
+
+  if (existsSync(filePath)) {
+    const { unlink } = await import('fs/promises')
+    await unlink(filePath)
+  }
+}
+
 export async function importAsset(projectId, sourcePath) {
   const projectPath = getProjectPath(projectId)
   const assetsDir = join(projectPath, 'assets')
@@ -165,60 +227,6 @@ export async function importAsset(projectId, sourcePath) {
   }
 }
 
-export async function exportProjectZip(projectId) {
-  const projectPath = getProjectPath(projectId)
-  const project = await loadProject(projectId)
-  const outputPath = join(app.getPath('desktop'), `${project.name.replace(/[^a-zA-Z0-9-_ ]/g, '')}.beamproject`)
-
-  // Create a simple tar-like archive using a directory copy approach
-  // For simplicity, we'll use the archiver approach with built-in zlib
-  const { createGzip } = await import('zlib')
-  const { pipeline } = await import('stream/promises')
-  const { pack } = await import('tar')
-
-  // Use tar to pack the project directory
-  // Since tar might not be available, use a simpler approach: zip the directory
-  // Actually, let's just copy the folder and create a manifest
-  const archiver = await createSimpleArchive(projectPath, outputPath)
-  return outputPath
-}
-
-// Simple project archive: copies project folder to a .beamproject file (actually a renamed folder)
-// For a proper implementation, we'd use a zip library
-async function createSimpleArchive(projectPath, outputPath) {
-  // Read all files in project
-  const files = {}
-  await collectFiles(projectPath, projectPath, files)
-
-  // Write as JSON bundle (simple but works for reasonable project sizes)
-  const archive = {
-    version: 1,
-    files: {}
-  }
-
-  for (const [relativePath, data] of Object.entries(files)) {
-    archive.files[relativePath] = data.toString('base64')
-  }
-
-  await writeFile(outputPath, JSON.stringify(archive))
-  return outputPath
-}
-
-async function collectFiles(basePath, currentPath, files) {
-  const entries = await readdir(currentPath, { withFileTypes: true })
-  for (const entry of entries) {
-    const fullPath = join(currentPath, entry.name)
-    const relativePath = fullPath.slice(basePath.length + 1)
-    if (entry.isDirectory()) {
-      // Skip exports directory to keep archive smaller
-      if (entry.name === 'exports') continue
-      await collectFiles(basePath, fullPath, files)
-    } else {
-      files[relativePath] = await readFile(fullPath)
-    }
-  }
-}
-
 export async function importProjectZip(archivePath) {
   const raw = await readFile(archivePath, 'utf-8')
   const archive = JSON.parse(raw)
@@ -232,9 +240,17 @@ export async function importProjectZip(archivePath) {
   const projectPath = getProjectPath(newId)
   await mkdir(projectPath, { recursive: true })
 
-  // Extract files
+  // Extract files (with path traversal protection)
+  const { resolve } = await import('path')
+  const resolvedBase = resolve(projectPath)
   for (const [relativePath, base64Data] of Object.entries(archive.files)) {
     const filePath = join(projectPath, relativePath)
+    const resolvedFile = resolve(filePath)
+    // Prevent archive slip — all files must stay inside the project directory
+    if (!resolvedFile.startsWith(resolvedBase)) {
+      console.warn(`Skipping unsafe archive path: ${relativePath}`)
+      continue
+    }
     const dir = join(filePath, '..')
     await mkdir(dir, { recursive: true })
     await writeFile(filePath, Buffer.from(base64Data, 'base64'))
@@ -278,7 +294,7 @@ function formatSrtTime(seconds) {
   const h = Math.floor(seconds / 3600)
   const m = Math.floor((seconds % 3600) / 60)
   const s = Math.floor(seconds % 60)
-  const ms = Math.round((seconds % 1) * 1000)
+  const ms = Math.min(999, Math.round((seconds % 1) * 1000))
   return `${pad(h, 2)}:${pad(m, 2)}:${pad(s, 2)},${pad(ms, 3)}`
 }
 

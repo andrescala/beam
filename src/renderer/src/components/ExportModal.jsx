@@ -102,6 +102,8 @@ function ExportModal({ project, onClose }) {
                 {format === 'gif' && (
                   <div className={styles.gifNote}>
                     GIF files can be large for long recordings. Best for clips under 15 seconds.
+                    GIF export includes trim, cuts, speed, and crop only. Webcam, text, image overlays,
+                    and effects (blur, vignette, zoom, title cards) are not included in GIF output.
                   </div>
                 )}
               </div>

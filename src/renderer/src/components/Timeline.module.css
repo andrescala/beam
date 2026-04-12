@@ -60,6 +60,27 @@
   font-family: var(--sans);
 }
 
+.silenceBtn {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border2);
+  background: transparent;
+  color: var(--text2);
+  cursor: pointer;
+  font-family: var(--sans);
+}
+.silenceBtn:hover:not(:disabled) {
+  background: rgba(239, 159, 39, 0.12);
+  border-color: var(--warning);
+  color: var(--warning);
+}
+.silenceBtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .cutCount {
   font-size: 10px;
   color: var(--danger);

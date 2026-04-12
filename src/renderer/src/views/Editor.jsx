@@ -5,7 +5,9 @@ import Timeline from '../components/Timeline'
 import Inspector from '../components/Inspector'
 import LayerPanel from '../components/LayerPanel'
 import CaptionEditor from '../components/CaptionEditor'
+import AssetLibrary from '../components/AssetLibrary'
 import ExportModal from '../components/ExportModal'
+import HelpDrawer from '../components/HelpDrawer'
 import { useToast } from '../components/Toast'
 import styles from './Editor.module.css'
 
@@ -20,7 +22,8 @@ function Editor() {
   const [currentTime, setCurrentTime] = useState(0)
   const [playing, setPlaying] = useState(false)
   const [exporting, setExporting] = useState(false)
-  const [bottomTab, setBottomTab] = useState('timeline') // timeline, layers, captions
+  const [helpOpen, setHelpOpen] = useState(false)
+  const [bottomTab, setBottomTab] = useState('timeline') // timeline, layers, assets, captions
   const videoRef = useRef(null)
 
   useEffect(() => {
@@ -44,16 +47,17 @@ function Editor() {
     }
   }
 
-  const updateEdit = useCallback(async (editUpdates) => {
-    try {
-      const updated = { ...project, edit: { ...project.edit, ...editUpdates } }
-      setProject(updated)
-      await window.electronAPI.saveProject(projectId, updated)
-    } catch (err) {
-      console.error('Failed to save edit:', err)
-      showToast('error', 'Failed to save changes')
-    }
-  }, [project, projectId, showToast])
+  const updateEdit = useCallback((editUpdates) => {
+    setProject((prev) => {
+      if (!prev) return prev
+      const updated = { ...prev, edit: { ...prev.edit, ...editUpdates } }
+      // Save to disk asynchronously (fire-and-forget with error logging)
+      window.electronAPI.saveProject(projectId, updated).catch((err) => {
+        console.error('Failed to save edit:', err)
+      })
+      return updated
+    })
+  }, [projectId])
 
   function handleSeek(time) {
     setCurrentTime(time)
@@ -67,10 +71,30 @@ function Editor() {
     if (playing) {
       videoRef.current.pause()
     } else {
+      // If video ended, seek to start before playing
+      if (videoRef.current.ended) {
+        videoRef.current.currentTime = project.edit?.trimStart || 0
+        setCurrentTime(project.edit?.trimStart || 0)
+      }
       videoRef.current.play()
     }
     setPlaying(!playing)
   }
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    function handleKeyDown(e) {
+      // Don't trigger when typing in inputs
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return
+
+      if (e.code === 'Space') {
+        e.preventDefault()
+        togglePlay()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [playing, project])
 
   if (loading) {
     return <div className={styles.loading}>Loading project...</div>
@@ -95,6 +119,9 @@ function Editor() {
           <span className={styles.projectName}>{project.name}</span>
         </div>
         <div className={styles.titlebarRight}>
+          <button className={styles.helpBtn} onClick={() => setHelpOpen(true)} title="Help & tutorials">
+            ?
+          </button>
           <button className={styles.exportBtn} onClick={() => setExporting(true)}>
             Export
           </button>
@@ -129,6 +156,12 @@ function Editor() {
               Layers
             </button>
             <button
+              className={`${styles.tabBtn} ${bottomTab === 'assets' ? styles.tabBtnActive : ''}`}
+              onClick={() => setBottomTab('assets')}
+            >
+              Assets
+            </button>
+            <button
               className={`${styles.tabBtn} ${bottomTab === 'captions' ? styles.tabBtnActive : ''}`}
               onClick={() => setBottomTab('captions')}
             >
@@ -140,6 +173,7 @@ function Editor() {
             {bottomTab === 'timeline' && (
               <Timeline
                 project={project}
+                projectId={projectId}
                 currentTime={currentTime}
                 onSeek={handleSeek}
                 onTrimChange={updateEdit}
@@ -150,6 +184,15 @@ function Editor() {
               <LayerPanel
                 project={project}
                 projectId={projectId}
+                currentTime={currentTime}
+                onEditChange={updateEdit}
+              />
+            )}
+            {bottomTab === 'assets' && (
+              <AssetLibrary
+                project={project}
+                projectId={projectId}
+                currentTime={currentTime}
                 onEditChange={updateEdit}
               />
             )}
@@ -177,6 +220,8 @@ function Editor() {
           onClose={() => setExporting(false)}
         />
       )}
+
+      <HelpDrawer open={helpOpen} onClose={() => setHelpOpen(false)} />
     </div>
   )
 }

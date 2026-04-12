@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useToast } from './Toast'
 import styles from './LayerPanel.module.css'
 
-function LayerPanel({ project, projectId, onEditChange }) {
+function LayerPanel({ project, projectId, currentTime, onEditChange }) {
   const showToast = useToast()
   const [expandedSection, setExpandedSection] = useState('text')
   const edit = project.edit || {}
@@ -108,10 +108,10 @@ function LayerPanel({ project, projectId, onEditChange }) {
     <div className={styles.panel}>
       {/* Text Layers */}
       <div className={styles.section}>
-        <button className={styles.sectionHeader} onClick={() => toggleSection('text')}>
+        <div className={styles.sectionHeader} onClick={() => toggleSection('text')} role="button" tabIndex={0}>
           <span>{expandedSection === 'text' ? '\u25BC' : '\u25B6'} Text ({textLayers.length})</span>
           <button className={styles.addBtn} onClick={(e) => { e.stopPropagation(); addTextLayer() }}>+</button>
-        </button>
+        </div>
         {expandedSection === 'text' && (
           <div className={styles.sectionBody}>
             {textLayers.length === 0 && (
@@ -202,6 +202,11 @@ function LayerPanel({ project, projectId, onEditChange }) {
                       value={(layer.startTime || 0).toFixed(1)}
                       onChange={(e) => updateTextLayer(layer.id, { startTime: parseFloat(e.target.value) || 0 })}
                     />
+                    <button
+                      className={styles.playheadBtn}
+                      onClick={() => updateTextLayer(layer.id, { startTime: currentTime || 0 })}
+                      title="Set to current playhead"
+                    >|</button>
                   </div>
                   <div className={styles.propRow}>
                     <label>End</label>
@@ -213,6 +218,11 @@ function LayerPanel({ project, projectId, onEditChange }) {
                       value={(layer.endTime || 0).toFixed(1)}
                       onChange={(e) => updateTextLayer(layer.id, { endTime: parseFloat(e.target.value) || 0 })}
                     />
+                    <button
+                      className={styles.playheadBtn}
+                      onClick={() => updateTextLayer(layer.id, { endTime: currentTime || 0 })}
+                      title="Set to current playhead"
+                    >|</button>
                   </div>
                 </div>
               </div>
@@ -223,10 +233,10 @@ function LayerPanel({ project, projectId, onEditChange }) {
 
       {/* Image Layers */}
       <div className={styles.section}>
-        <button className={styles.sectionHeader} onClick={() => toggleSection('image')}>
+        <div className={styles.sectionHeader} onClick={() => toggleSection('image')} role="button" tabIndex={0}>
           <span>{expandedSection === 'image' ? '\u25BC' : '\u25B6'} Images ({imageLayers.length})</span>
           <button className={styles.addBtn} onClick={(e) => { e.stopPropagation(); addImageLayer() }}>+</button>
-        </button>
+        </div>
         {expandedSection === 'image' && (
           <div className={styles.sectionBody}>
             {imageLayers.length === 0 && (
@@ -235,6 +245,11 @@ function LayerPanel({ project, projectId, onEditChange }) {
             {imageLayers.map((layer) => (
               <div key={layer.id} className={styles.layerCard}>
                 <div className={styles.layerHeader}>
+                  <img
+                    src={`project-file://${project.id}/assets/${layer.file}`}
+                    alt=""
+                    className={styles.layerThumb}
+                  />
                   <span className={styles.layerName}>{layer.name}</span>
                   <button className={styles.removeBtn} onClick={() => removeImageLayer(layer.id)}>{'\u00D7'}</button>
                 </div>
@@ -283,6 +298,11 @@ function LayerPanel({ project, projectId, onEditChange }) {
                       value={(layer.startTime || 0).toFixed(1)}
                       onChange={(e) => updateImageLayer(layer.id, { startTime: parseFloat(e.target.value) || 0 })}
                     />
+                    <button
+                      className={styles.playheadBtn}
+                      onClick={() => updateImageLayer(layer.id, { startTime: currentTime || 0 })}
+                      title="Set to current playhead"
+                    >|</button>
                   </div>
                   <div className={styles.propRow}>
                     <label>End</label>
@@ -294,6 +314,11 @@ function LayerPanel({ project, projectId, onEditChange }) {
                       value={(layer.endTime != null ? layer.endTime : project.duration || 0).toFixed(1)}
                       onChange={(e) => updateImageLayer(layer.id, { endTime: parseFloat(e.target.value) || null })}
                     />
+                    <button
+                      className={styles.playheadBtn}
+                      onClick={() => updateImageLayer(layer.id, { endTime: currentTime || 0 })}
+                      title="Set to current playhead"
+                    >|</button>
                   </div>
                 </div>
               </div>
@@ -304,10 +329,10 @@ function LayerPanel({ project, projectId, onEditChange }) {
 
       {/* Audio Layers */}
       <div className={styles.section}>
-        <button className={styles.sectionHeader} onClick={() => toggleSection('audio')}>
+        <div className={styles.sectionHeader} onClick={() => toggleSection('audio')} role="button" tabIndex={0}>
           <span>{expandedSection === 'audio' ? '\u25BC' : '\u25B6'} Audio ({audioLayers.length})</span>
           <button className={styles.addBtn} onClick={(e) => { e.stopPropagation(); addAudioLayer() }}>+</button>
-        </button>
+        </div>
         {expandedSection === 'audio' && (
           <div className={styles.sectionBody}>
             {audioLayers.length === 0 && (

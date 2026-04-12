@@ -1,7 +1,8 @@
 import { useRef, useCallback, useState } from 'react'
+import { useToast } from './Toast'
 import styles from './Timeline.module.css'
 
-function Timeline({ project, currentTime, onSeek, onTrimChange, onCutsChange }) {
+function Timeline({ project, projectId, currentTime, onSeek, onTrimChange, onCutsChange }) {
   const trackRef = useRef(null)
   const duration = project.duration || 1
   const trimStart = project.edit?.trimStart || 0
@@ -9,6 +10,8 @@ function Timeline({ project, currentTime, onSeek, onTrimChange, onCutsChange }) 
   const cuts = project.edit?.cuts || []
   const [cutMode, setCutMode] = useState(false)
   const [cutStart, setCutStart] = useState(null)
+  const [detectingSilence, setDetectingSilence] = useState(false)
+  const showToast = useToast()
 
   const getTimeFromEvent = useCallback((e) => {
     const rect = trackRef.current.getBoundingClientRect()
@@ -96,6 +99,38 @@ function Timeline({ project, currentTime, onSeek, onTrimChange, onCutsChange }) 
     onCutsChange({ cuts: updated })
   }
 
+  async function handleRemoveSilence() {
+    if (!projectId) return
+    setDetectingSilence(true)
+    try {
+      const result = await window.electronAPI.detectSilence(projectId, -30, 0.5)
+      if (result?.error) {
+        showToast('error', 'Silence detection failed')
+        setDetectingSilence(false)
+        return
+      }
+      const silences = result?.silences || []
+      if (silences.length === 0) {
+        showToast('info', 'No silent segments found')
+        setDetectingSilence(false)
+        return
+      }
+      // Clamp trailing silence to recording duration
+      const clampedSilences = silences.map((s) => ({
+        start: s.start,
+        end: Math.min(s.end, duration)
+      }))
+      const totalSilence = clampedSilences.reduce((sum, s) => sum + (s.end - s.start), 0)
+      // Add silent regions as cuts (merge with existing)
+      const newCuts = [...cuts, ...clampedSilences]
+      onCutsChange({ cuts: mergeCuts(newCuts) })
+      showToast('success', `Found ${silences.length} silent segment${silences.length > 1 ? 's' : ''} (${totalSilence.toFixed(1)}s)`)
+    } catch (err) {
+      console.error('Silence detection error:', err)
+    }
+    setDetectingSilence(false)
+  }
+
   const playheadPos = (currentTime / duration) * 100
   const trimStartPos = (trimStart / duration) * 100
   const trimEndPos = (trimEnd / duration) * 100
@@ -117,6 +152,14 @@ function Timeline({ project, currentTime, onSeek, onTrimChange, onCutsChange }) 
               Cancel
             </button>
           )}
+          <button
+            className={styles.silenceBtn}
+            onClick={handleRemoveSilence}
+            disabled={detectingSilence}
+            title="Detect and remove silent segments"
+          >
+            {detectingSilence ? 'Detecting...' : 'Remove Silence'}
+          </button>
           {cuts.length > 0 && !cutMode && (
             <span className={styles.cutCount}>{cuts.length} cut{cuts.length > 1 ? 's' : ''}</span>
           )}

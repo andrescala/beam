@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import ProjectCard from '../components/ProjectCard'
+import HelpDrawer from '../components/HelpDrawer'
+import WelcomeModal from '../components/WelcomeModal'
 import { useToast } from '../components/Toast'
 import styles from './Home.module.css'
 
@@ -9,9 +11,17 @@ function Home() {
   const showToast = useToast()
   const [projects, setProjects] = useState([])
   const [loading, setLoading] = useState(true)
+  const [helpOpen, setHelpOpen] = useState(false)
+  const [showWelcome, setShowWelcome] = useState(false)
 
   useEffect(() => {
     loadProjects()
+    // Show welcome modal on first launch
+    window.electronAPI.getPreferences().then((prefs) => {
+      if (!prefs.hasSeenWelcome) {
+        setShowWelcome(true)
+      }
+    }).catch(() => {})
   }, [])
 
   async function loadProjects() {
@@ -70,6 +80,9 @@ function Home() {
           <h1 className={styles.title}>Beam</h1>
         </div>
         <div className={styles.headerRight}>
+          <button className={styles.helpBtn} onClick={() => setHelpOpen(true)} title="Help & tutorials">
+            ?
+          </button>
           <button className={styles.importBtn} onClick={handleImportProject}>
             Import
           </button>
@@ -102,6 +115,9 @@ function Home() {
           </div>
         )}
       </main>
+
+      <HelpDrawer open={helpOpen} onClose={() => setHelpOpen(false)} />
+      {showWelcome && <WelcomeModal onClose={() => setShowWelcome(false)} />}
     </div>
   )
 }

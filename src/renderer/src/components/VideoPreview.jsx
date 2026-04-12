@@ -132,7 +132,7 @@ function VideoPreview({ project, projectPath, videoRef, currentTime, playing, on
                   ...webcamPos,
                   width: `${webcamSize}%`,
                   borderRadius: project.edit?.webcamShape === 'circle' ? '50%' : '8px',
-                  aspectRatio: '1 / 1',
+                  aspectRatio: project.edit?.webcamShape === 'circle' ? '1 / 1' : '4 / 3',
                   objectFit: 'cover'
                 }}
                 onError={(e) => console.error('Webcam video error:', e.target.error)}
@@ -198,6 +198,21 @@ function VideoPreview({ project, projectPath, videoRef, currentTime, playing, on
         )}
         {crop.enabled && crop.aspectRatio !== 'original' && (
           <span className={styles.cropBadge}>{crop.aspectRatio}</span>
+        )}
+        {project.edit?.backgroundBlur?.enabled && (
+          <span className={styles.blurBadge}>Blur</span>
+        )}
+        {project.edit?.introCard && (
+          <span className={styles.introBadge}>Intro</span>
+        )}
+        {project.edit?.outroCard && (
+          <span className={styles.introBadge}>Outro</span>
+        )}
+        {project.edit?.cursorSpotlight?.enabled && (
+          <span className={styles.blurBadge}>Vignette</span>
+        )}
+        {(project.edit?.zoomKeyframes?.length || 0) > 0 && (
+          <span className={styles.introBadge}>Zoom ({project.edit.zoomKeyframes.length})</span>
         )}
       </div>
     </div>

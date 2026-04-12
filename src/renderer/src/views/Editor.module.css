@@ -58,6 +58,26 @@
   gap: 8px;
 }
 
+.helpBtn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid var(--border2);
+  background: transparent;
+  color: var(--text3);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--sans);
+}
+.helpBtn:hover {
+  background: var(--bg3);
+  color: var(--text);
+}
+
 .exportBtn {
   font-size: 13px;
   font-weight: 600;

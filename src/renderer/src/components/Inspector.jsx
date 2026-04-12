@@ -43,6 +43,11 @@ function Inspector({ project, projectId, onEditChange }) {
   const edit = project.edit || {}
   const speed = edit.speed || 1.0
   const crop = edit.crop || { enabled: false, aspectRatio: 'original' }
+  const introCard = edit.introCard || null
+  const outroCard = edit.outroCard || null
+  const backgroundBlur = edit.backgroundBlur || null
+  const cursorSpotlight = edit.cursorSpotlight || null
+  const zoomKeyframes = edit.zoomKeyframes || []
 
   function handleCropChange(aspectRatio) {
     if (aspectRatio === 'original') {
@@ -195,6 +200,321 @@ function Inspector({ project, projectId, onEditChange }) {
           </div>
         </div>
       )}
+
+      {/* Intro Card */}
+      <div className={styles.section}>
+        <div className={styles.label}>Intro Card</div>
+        <div className={styles.toggleGroup} style={{ marginBottom: 8 }}>
+          <button
+            className={`${styles.toggleBtn} ${introCard ? styles.toggleActive : ''}`}
+            onClick={() =>
+              onEditChange({
+                introCard: introCard
+                  ? null
+                  : { title: 'Title', subtitle: '', duration: 3, bgColor: '#000000', titleColor: 'white', subtitleColor: 'gray' }
+              })
+            }
+          >
+            {introCard ? 'On' : 'Off'}
+          </button>
+        </div>
+        {introCard && (
+          <>
+            <div className={styles.row}>
+              <span className={styles.key}>Title</span>
+              <input
+                className={styles.input}
+                style={{ width: 100 }}
+                value={introCard.title || ''}
+                onChange={(e) => onEditChange({ introCard: { ...introCard, title: e.target.value } })}
+              />
+            </div>
+            <div className={styles.row}>
+              <span className={styles.key}>Subtitle</span>
+              <input
+                className={styles.input}
+                style={{ width: 100 }}
+                value={introCard.subtitle || ''}
+                onChange={(e) => onEditChange({ introCard: { ...introCard, subtitle: e.target.value } })}
+              />
+            </div>
+            <div className={styles.row}>
+              <span className={styles.key}>Duration</span>
+              <input
+                className={styles.input}
+                type="number"
+                step="0.5"
+                min="1"
+                max="10"
+                value={introCard.duration || 3}
+                onChange={(e) => onEditChange({ introCard: { ...introCard, duration: parseFloat(e.target.value) || 3 } })}
+              />
+            </div>
+            <div className={styles.row}>
+              <span className={styles.key}>Background</span>
+              <input
+                type="color"
+                className={styles.colorInput}
+                value={introCard.bgColor || '#000000'}
+                onChange={(e) => onEditChange({ introCard: { ...introCard, bgColor: e.target.value } })}
+              />
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Outro Card */}
+      <div className={styles.section}>
+        <div className={styles.label}>Outro Card</div>
+        <div className={styles.toggleGroup} style={{ marginBottom: 8 }}>
+          <button
+            className={`${styles.toggleBtn} ${outroCard ? styles.toggleActive : ''}`}
+            onClick={() =>
+              onEditChange({
+                outroCard: outroCard
+                  ? null
+                  : { title: 'Thanks for watching', subtitle: '', duration: 3, bgColor: '#000000', titleColor: 'white', subtitleColor: 'gray' }
+              })
+            }
+          >
+            {outroCard ? 'On' : 'Off'}
+          </button>
+        </div>
+        {outroCard && (
+          <>
+            <div className={styles.row}>
+              <span className={styles.key}>Title</span>
+              <input
+                className={styles.input}
+                style={{ width: 100 }}
+                value={outroCard.title || ''}
+                onChange={(e) => onEditChange({ outroCard: { ...outroCard, title: e.target.value } })}
+              />
+            </div>
+            <div className={styles.row}>
+              <span className={styles.key}>Subtitle</span>
+              <input
+                className={styles.input}
+                style={{ width: 100 }}
+                value={outroCard.subtitle || ''}
+                onChange={(e) => onEditChange({ outroCard: { ...outroCard, subtitle: e.target.value } })}
+              />
+            </div>
+            <div className={styles.row}>
+              <span className={styles.key}>Duration</span>
+              <input
+                className={styles.input}
+                type="number"
+                step="0.5"
+                min="1"
+                max="10"
+                value={outroCard.duration || 3}
+                onChange={(e) => onEditChange({ outroCard: { ...outroCard, duration: parseFloat(e.target.value) || 3 } })}
+              />
+            </div>
+            <div className={styles.row}>
+              <span className={styles.key}>Background</span>
+              <input
+                type="color"
+                className={styles.colorInput}
+                value={outroCard.bgColor || '#000000'}
+                onChange={(e) => onEditChange({ outroCard: { ...outroCard, bgColor: e.target.value } })}
+              />
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Video Blur */}
+      <div className={styles.section}>
+        <div className={styles.label}>Video Blur</div>
+        <div className={styles.toggleGroup} style={{ marginBottom: 8 }}>
+          <button
+            className={`${styles.toggleBtn} ${backgroundBlur?.enabled ? styles.toggleActive : ''}`}
+            onClick={() =>
+              onEditChange({
+                backgroundBlur: backgroundBlur?.enabled
+                  ? { enabled: false, strength: backgroundBlur.strength || 10 }
+                  : { enabled: true, strength: 10 }
+              })
+            }
+          >
+            {backgroundBlur?.enabled ? 'On' : 'Off'}
+          </button>
+        </div>
+        {backgroundBlur?.enabled && (
+          <>
+            <div className={styles.row}>
+              <span className={styles.key}>Strength</span>
+              <span className={styles.value}>{backgroundBlur.strength || 10}</span>
+            </div>
+            <input
+              type="range"
+              className={styles.slider}
+              min="2"
+              max="40"
+              value={backgroundBlur.strength || 10}
+              onChange={(e) =>
+                onEditChange({ backgroundBlur: { enabled: true, strength: parseInt(e.target.value) } })
+              }
+            />
+          </>
+        )}
+      </div>
+
+      {/* Vignette */}
+      <div className={styles.section}>
+        <div className={styles.label}>Vignette</div>
+        <div className={styles.toggleGroup} style={{ marginBottom: 8 }}>
+          <button
+            className={`${styles.toggleBtn} ${cursorSpotlight?.enabled ? styles.toggleActive : ''}`}
+            onClick={() =>
+              onEditChange({
+                cursorSpotlight: cursorSpotlight?.enabled
+                  ? { enabled: false, intensity: cursorSpotlight.intensity || 0.4 }
+                  : { enabled: true, intensity: 0.4 }
+              })
+            }
+          >
+            {cursorSpotlight?.enabled ? 'On' : 'Off'}
+          </button>
+        </div>
+        {cursorSpotlight?.enabled && (
+          <>
+            <div className={styles.row}>
+              <span className={styles.key}>Intensity</span>
+              <span className={styles.value}>{((cursorSpotlight.intensity || 0.4) * 100).toFixed(0)}%</span>
+            </div>
+            <input
+              type="range"
+              className={styles.slider}
+              min="10"
+              max="80"
+              value={Math.round((cursorSpotlight.intensity || 0.4) * 100)}
+              onChange={(e) =>
+                onEditChange({ cursorSpotlight: { enabled: true, intensity: parseInt(e.target.value) / 100 } })
+              }
+            />
+          </>
+        )}
+      </div>
+
+      {/* Zoom Keyframes */}
+      <div className={styles.section}>
+        <div className={styles.label}>Zoom &amp; Pan</div>
+        <button
+          className={styles.backupBtn}
+          onClick={() => {
+            const newKf = {
+              id: Date.now().toString(),
+              time: 0,
+              duration: 2,
+              zoom: 1.5,
+              x: 0.5,
+              y: 0.5
+            }
+            onEditChange({ zoomKeyframes: [...zoomKeyframes, newKf] })
+          }}
+        >
+          + Add Keyframe
+        </button>
+        {zoomKeyframes.map((kf, i) => (
+          <div key={kf.id || i} className={styles.kfItem}>
+            <div className={styles.row}>
+              <span className={styles.key}>Time</span>
+              <input
+                className={styles.input}
+                type="number"
+                step="0.5"
+                min="0"
+                value={kf.time ?? 0}
+                onChange={(e) => {
+                  const updated = [...zoomKeyframes]
+                  const val = parseFloat(e.target.value)
+                  updated[i] = { ...kf, time: isNaN(val) ? 0 : val }
+                  onEditChange({ zoomKeyframes: updated })
+                }}
+              />
+            </div>
+            <div className={styles.row}>
+              <span className={styles.key}>Duration</span>
+              <input
+                className={styles.input}
+                type="number"
+                step="0.5"
+                min="0.5"
+                max="30"
+                value={kf.duration ?? 2}
+                onChange={(e) => {
+                  const updated = [...zoomKeyframes]
+                  const val = parseFloat(e.target.value)
+                  updated[i] = { ...kf, duration: isNaN(val) || val < 0.5 ? 0.5 : val }
+                  onEditChange({ zoomKeyframes: updated })
+                }}
+              />
+            </div>
+            <div className={styles.row}>
+              <span className={styles.key}>Zoom</span>
+              <input
+                className={styles.input}
+                type="number"
+                step="0.1"
+                min="1.1"
+                max="4"
+                value={kf.zoom ?? 1.5}
+                onChange={(e) => {
+                  const updated = [...zoomKeyframes]
+                  const val = parseFloat(e.target.value)
+                  updated[i] = { ...kf, zoom: isNaN(val) || val < 1.1 ? 1.1 : val }
+                  onEditChange({ zoomKeyframes: updated })
+                }}
+              />
+            </div>
+            <div className={styles.row}>
+              <span className={styles.key}>X</span>
+              <input
+                className={styles.input}
+                type="number"
+                step="0.05"
+                min="0"
+                max="1"
+                value={(kf.x ?? 0.5).toFixed(2)}
+                onChange={(e) => {
+                  const updated = [...zoomKeyframes]
+                  const val = parseFloat(e.target.value)
+                  updated[i] = { ...kf, x: isNaN(val) ? 0.5 : Math.max(0, Math.min(1, val)) }
+                  onEditChange({ zoomKeyframes: updated })
+                }}
+              />
+            </div>
+            <div className={styles.row}>
+              <span className={styles.key}>Y</span>
+              <input
+                className={styles.input}
+                type="number"
+                step="0.05"
+                min="0"
+                max="1"
+                value={(kf.y ?? 0.5).toFixed(2)}
+                onChange={(e) => {
+                  const updated = [...zoomKeyframes]
+                  const val = parseFloat(e.target.value)
+                  updated[i] = { ...kf, y: isNaN(val) ? 0.5 : Math.max(0, Math.min(1, val)) }
+                  onEditChange({ zoomKeyframes: updated })
+                }}
+              />
+            </div>
+            <button
+              className={styles.removeKfBtn}
+              onClick={() => {
+                onEditChange({ zoomKeyframes: zoomKeyframes.filter((_, j) => j !== i) })
+              }}
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+      </div>
 
       {/* Project backup */}
       <div className={styles.section}>
