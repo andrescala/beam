@@ -138,9 +138,6 @@ npm run dev
 
 # Build for production
 npm run build
-
-# Package as .dmg / .exe
-npm run package
 ```
 
 ### Requirements
@@ -155,6 +152,80 @@ On first launch, macOS will prompt for:
 - **Camera** — for webcam overlay
 
 If running via `npm run dev`, the permission is granted to **"Electron"** (not "Beam").
+
+## Building Installers
+
+### macOS (.dmg)
+
+```bash
+npm run build
+npm run package -- --mac
+```
+
+This generates a `.dmg` installer in the `dist/` folder. The app uses `resources/icon.icns` as the dock icon and includes macOS entitlements for screen recording, microphone, and camera access.
+
+**Code signing & notarization** (optional, for distribution):
+To distribute outside the Mac App Store, you need an Apple Developer certificate. Set these environment variables before packaging:
+
+```bash
+export CSC_LINK="path/to/your/certificate.p12"
+export CSC_KEY_PASSWORD="your-certificate-password"
+export APPLE_ID="your@apple.id"
+export APPLE_APP_SPECIFIC_PASSWORD="app-specific-password"
+export APPLE_TEAM_ID="your-team-id"
+
+npm run package -- --mac
+```
+
+Without code signing, the app will still build and run locally — users just need to right-click > Open on first launch to bypass Gatekeeper.
+
+### Windows (.exe)
+
+```bash
+npm run build
+npm run package -- --win
+```
+
+This generates an NSIS installer (`.exe`) in the `dist/` folder. The app uses `resources/icon.ico` as the taskbar and shortcut icon.
+
+**Building Windows from macOS**: You need [Wine](https://www.winehq.org/) installed (`brew install --cask wine-stable`). Alternatively, use a CI pipeline with a Windows runner.
+
+**Code signing** (optional): Set the `CSC_LINK` and `CSC_KEY_PASSWORD` environment variables with a Windows code signing certificate (`.pfx` file) before packaging.
+
+### Linux (.AppImage / .deb)
+
+```bash
+npm run build
+npm run package -- --linux
+```
+
+Generates `.AppImage` and `.deb` files in `dist/`. Uses `resources/icon.png`.
+
+### All platforms at once
+
+```bash
+npm run build
+npm run package -- --mac --win --linux
+```
+
+> **Note**: Cross-compilation has limitations. Building Windows from macOS requires Wine, and building macOS from Windows/Linux is not supported. For reliable multi-platform builds, use CI (e.g., GitHub Actions with `macos-latest` and `windows-latest` runners).
+
+## Testing
+
+The project includes a comprehensive Playwright E2E test suite that launches the real Electron app.
+
+```bash
+# Run all 53 tests
+npm test
+
+# Run specific test suites
+npm run test:home         # Home screen tests
+npm run test:editor       # Editor view tests
+npm run test:ipc          # IPC handler tests
+npm run test:screenshots  # Capture screenshots of every screen
+```
+
+Screenshots from `test:screenshots` are saved to `e2e/screenshots/` for visual review.
 
 ## Roadmap
 
