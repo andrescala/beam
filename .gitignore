@@ -3,3 +3,6 @@ out/
 dist/
 .DS_Store
 *.log
+e2e/screenshots/
+test-results/
+playwright-report/
