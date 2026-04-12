@@ -44,7 +44,9 @@ export async function createProject(name) {
       trimEnd: null,
       webcamPosition: 'bottom-right',
       webcamSize: 0.2,
-      webcamShape: 'circle'
+      webcamShape: 'circle',
+      speed: 1.0,
+      cuts: []
     },
     exportSettings: {
       format: 'mp4',

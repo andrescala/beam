@@ -47,6 +47,57 @@
   padding: 20px 16px;
 }
 
+.formatRow {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.formatBtn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 8px;
+  border: 1px solid var(--border2);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text2);
+  cursor: pointer;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 600;
+  transition: all 0.15s;
+}
+.formatBtn:hover {
+  background: var(--bg3);
+}
+.formatBtnActive {
+  background: var(--bg3);
+  border-color: var(--info);
+  color: var(--text);
+}
+
+.formatIcon {
+  font-size: 20px;
+}
+
+.formatDesc {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text3);
+}
+
+.gifNote {
+  font-size: 11px;
+  color: var(--amber-text);
+  background: var(--amber-bg);
+  padding: 8px 10px;
+  border-radius: 4px;
+  margin-top: 8px;
+}
+
 .info {
   margin-bottom: 20px;
 }

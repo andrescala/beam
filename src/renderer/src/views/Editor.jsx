@@ -30,8 +30,9 @@ function Editor() {
         window.electronAPI.loadProject(projectId),
         window.electronAPI.getProjectPath(projectId)
       ])
-      console.log('Loaded project:', data)
-      console.log('Project path:', path)
+      // Ensure new edit fields have defaults
+      if (!data.edit.cuts) data.edit.cuts = []
+      if (!data.edit.speed) data.edit.speed = 1.0
       setProject(data)
       setProjectPath(path)
     } catch (err) {
@@ -106,7 +107,7 @@ function Editor() {
         </div>
         <div className={styles.titlebarRight}>
           <button className={styles.exportBtn} onClick={() => setExporting(true)}>
-            Export MP4
+            Export
           </button>
         </div>
       </header>
@@ -128,6 +129,7 @@ function Editor() {
             currentTime={currentTime}
             onSeek={handleSeek}
             onTrimChange={updateEdit}
+            onCutsChange={updateEdit}
           />
         </div>
 

@@ -12,7 +12,7 @@ import {
   deleteProject,
   saveRawRecording
 } from './projects.js'
-import { generateThumbnail, exportMp4 } from './ffmpeg.js'
+import { generateThumbnail, exportMp4, exportGif } from './ffmpeg.js'
 import { getPreferences, setPreferences } from './preferences.js'
 
 let mainWindow = null
@@ -162,16 +162,23 @@ function registerIpcHandlers() {
   })
 
   // Processing
-  ipcMain.handle('process-recording', async (_event, projectId) => {
+  ipcMain.handle('process-recording', async (_event, projectId, format) => {
     try {
       const project = await loadProject(projectId)
       const projectPath = getProjectPath(projectId)
 
-      const outputPath = await exportMp4(projectPath, project, (percent) => {
+      const progressCallback = (percent) => {
         if (mainWindow) {
           mainWindow.webContents.send('export-progress', percent)
         }
-      })
+      }
+
+      let outputPath
+      if (format === 'gif') {
+        outputPath = await exportGif(projectPath, project, progressCallback)
+      } else {
+        outputPath = await exportMp4(projectPath, project, progressCallback)
+      }
 
       // Update project with last export path
       project.exportSettings.lastExportPath = outputPath

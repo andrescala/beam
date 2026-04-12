@@ -17,10 +17,53 @@
   flex-shrink: 0;
 }
 
+.toolbarLeft {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .toolbarLabel {
   font-size: 11px;
   font-weight: 600;
   color: var(--text2);
+}
+
+.cutBtn {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border2);
+  background: transparent;
+  color: var(--text2);
+  cursor: pointer;
+  font-family: var(--sans);
+}
+.cutBtn:hover {
+  background: var(--bg3);
+}
+.cutBtnActive {
+  background: rgba(226, 75, 74, 0.15);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.cancelCutBtn {
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text3);
+  cursor: pointer;
+  font-family: var(--sans);
+}
+
+.cutCount {
+  font-size: 10px;
+  color: var(--danger);
+  font-weight: 600;
 }
 
 .timecode {
@@ -142,6 +185,70 @@
 .trimHandle:hover {
   width: 6px;
   background: #4da6ff;
+}
+
+.trackCutMode {
+  cursor: crosshair;
+}
+
+.cutRegion {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: rgba(226, 75, 74, 0.25);
+  border-left: 2px solid var(--danger);
+  border-right: 2px solid var(--danger);
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cutHandle {
+  position: absolute;
+  top: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 4;
+}
+
+.cutRemoveBtn {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: none;
+  background: var(--danger);
+  color: #fff;
+  font-size: 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 4;
+  padding: 0;
+  line-height: 1;
+}
+.cutRegion:hover .cutRemoveBtn {
+  opacity: 1;
+}
+
+.cutMarker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--danger);
+  z-index: 8;
+  pointer-events: none;
+  animation: cutPulse 0.8s infinite;
+}
+
+@keyframes cutPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
 
 .playhead {

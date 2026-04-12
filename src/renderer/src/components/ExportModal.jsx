@@ -5,6 +5,7 @@ function ExportModal({ project, onClose }) {
   const [progress, setProgress] = useState(null) // null = not started, 0-100 = in progress, -1 = done
   const [exportPath, setExportPath] = useState(null)
   const [error, setError] = useState(null)
+  const [format, setFormat] = useState('mp4')
 
   useEffect(() => {
     const cleanup = window.electronAPI.onExportProgress((p) => {
@@ -18,7 +19,7 @@ function ExportModal({ project, onClose }) {
       setProgress(0)
       setError(null)
 
-      const result = await window.electronAPI.processRecording(project.id)
+      const result = await window.electronAPI.processRecording(project.id, format)
       if (result.error) {
         setError(result.error)
         setProgress(null)
@@ -39,42 +40,80 @@ function ExportModal({ project, onClose }) {
     }
   }
 
+  const cuts = project.edit?.cuts || []
+  const speed = project.edit?.speed || 1.0
+  const rawDuration = (project.edit?.trimEnd || project.duration) - (project.edit?.trimStart || 0)
+  // Subtract cuts
+  const cutDuration = cuts.reduce((sum, c) => sum + (c.end - c.start), 0)
+  const effectiveDuration = (rawDuration - cutDuration) / speed
+
   return (
     <div className={styles.overlay} onClick={onClose}>
       <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
         <div className={styles.header}>
           <h3>Export</h3>
-          <button className={styles.closeBtn} onClick={onClose}>×</button>
+          <button className={styles.closeBtn} onClick={onClose}>&#x00D7;</button>
         </div>
 
         <div className={styles.body}>
           {progress === null && !error && (
             <>
+              {/* Format selector */}
+              <div className={styles.formatRow}>
+                <button
+                  className={`${styles.formatBtn} ${format === 'mp4' ? styles.formatBtnActive : ''}`}
+                  onClick={() => setFormat('mp4')}
+                >
+                  <span className={styles.formatIcon}>&#x1F3AC;</span>
+                  <span>MP4</span>
+                  <span className={styles.formatDesc}>H.264 video</span>
+                </button>
+                <button
+                  className={`${styles.formatBtn} ${format === 'gif' ? styles.formatBtnActive : ''}`}
+                  onClick={() => setFormat('gif')}
+                >
+                  <span className={styles.formatIcon}>&#x1F5BC;</span>
+                  <span>GIF</span>
+                  <span className={styles.formatDesc}>Animated image</span>
+                </button>
+              </div>
+
               <div className={styles.info}>
                 <div className={styles.row}>
                   <span>Format</span>
-                  <span>MP4 (H.264)</span>
-                </div>
-                <div className={styles.row}>
-                  <span>Quality</span>
-                  <span>{project.exportSettings?.quality || 'balanced'}</span>
+                  <span>{format === 'mp4' ? 'MP4 (H.264)' : 'GIF (640px, 15fps)'}</span>
                 </div>
                 <div className={styles.row}>
                   <span>Duration</span>
-                  <span>{formatTime(
-                    (project.edit?.trimEnd || project.duration) - (project.edit?.trimStart || 0)
-                  )}</span>
+                  <span>{formatTime(effectiveDuration)}</span>
                 </div>
+                {speed !== 1.0 && (
+                  <div className={styles.row}>
+                    <span>Speed</span>
+                    <span>{speed}x</span>
+                  </div>
+                )}
+                {cuts.length > 0 && (
+                  <div className={styles.row}>
+                    <span>Cuts</span>
+                    <span>{cuts.length} region{cuts.length > 1 ? 's' : ''} removed</span>
+                  </div>
+                )}
+                {format === 'gif' && (
+                  <div className={styles.gifNote}>
+                    GIF files can be large for long recordings. Best for clips under 15 seconds.
+                  </div>
+                )}
               </div>
               <button className={styles.exportBtn} onClick={handleExport}>
-                Export MP4
+                Export {format.toUpperCase()}
               </button>
             </>
           )}
 
           {progress !== null && progress >= 0 && progress !== -1 && (
             <div className={styles.progressWrap}>
-              <div className={styles.progressLabel}>Exporting...</div>
+              <div className={styles.progressLabel}>Exporting {format.toUpperCase()}...</div>
               <div className={styles.progressBar}>
                 <div className={styles.progressFill} style={{ width: `${progress}%` }} />
               </div>
@@ -84,7 +123,7 @@ function ExportModal({ project, onClose }) {
 
           {progress === -1 && (
             <div className={styles.done}>
-              <div className={styles.doneIcon}>✓</div>
+              <div className={styles.doneIcon}>&#x2713;</div>
               <p>Export complete!</p>
               <div className={styles.doneActions}>
                 <button className={styles.secondaryBtn} onClick={handleShowInFolder}>

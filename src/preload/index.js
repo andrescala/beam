@@ -19,7 +19,7 @@ const electronAPI = {
     ipcRenderer.invoke('save-raw-recording', projectId, type, buffer),
 
   // Processing
-  processRecording: (projectId) => ipcRenderer.invoke('process-recording', projectId),
+  processRecording: (projectId, format) => ipcRenderer.invoke('process-recording', projectId, format),
   generateThumbnail: (projectId) => ipcRenderer.invoke('generate-thumbnail', projectId),
 
   // Dialogs & shell

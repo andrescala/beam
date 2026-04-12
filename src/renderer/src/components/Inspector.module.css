@@ -72,6 +72,34 @@
   margin: 4px 0 8px;
 }
 
+.speedPresets {
+  display: flex;
+  gap: 3px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.speedBtn {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 2px;
+  font-size: 10px;
+  font-family: var(--mono);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text3);
+  cursor: pointer;
+}
+.speedBtn:hover {
+  background: var(--bg3);
+}
+.speedBtnActive {
+  background: var(--bg3);
+  border-color: var(--info);
+  color: var(--info);
+}
+
 .positionGrid {
   display: grid;
   grid-template-columns: 1fr 1fr;

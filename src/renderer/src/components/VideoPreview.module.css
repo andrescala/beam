@@ -73,3 +73,13 @@
   font-size: 12px;
   color: rgba(255, 255, 255, 0.45);
 }
+
+.speedBadge {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(133, 183, 235, 0.2);
+  color: var(--info);
+}
