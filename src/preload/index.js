@@ -29,6 +29,9 @@ const electronAPI = {
   extractAudio: (projectId) => ipcRenderer.invoke('extract-audio', projectId),
   detectSilence: (projectId, threshold, minDuration) =>
     ipcRenderer.invoke('detect-silence', projectId, threshold, minDuration),
+  whisperAvailable: () => ipcRenderer.invoke('whisper-available'),
+  transcribeRecording: (projectId, opts) =>
+    ipcRenderer.invoke('transcribe-recording', projectId, opts),
 
   // SRT export
   exportSrt: (projectId) => ipcRenderer.invoke('export-srt', projectId),

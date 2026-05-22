@@ -3,10 +3,15 @@ import ffmpegStatic from 'ffmpeg-static'
 import { join } from 'path'
 import { existsSync, unlinkSync } from 'fs'
 import { mkdir } from 'fs/promises'
+import { spawn } from 'child_process'
 
 // Fix path for asar packaging
 const ffmpegPath = ffmpegStatic.replace('app.asar', 'app.asar.unpacked')
+const ffprobePath = ffmpegPath.replace(/ffmpeg$/, 'ffprobe')
 ffmpeg.setFfmpegPath(ffmpegPath)
+// ffmpeg-static ships ffmpeg only; fluent-ffmpeg will look for ffprobe on PATH
+// for ffmpeg.ffprobe(). That's fine on macOS dev but we shell out manually
+// where we need fine-grained packet inspection.
 
 // Get video dimensions via ffprobe
 function probeVideo(filePath) {
@@ -104,6 +109,48 @@ function computeOutputDuration(keepSegments) {
   return keepSegments.reduce((sum, seg) => sum + (seg.end - seg.start), 0)
 }
 
+/**
+ * Convert a Chrome-MediaRecorder WebM to MP4 (H.264 + AAC) so the browser
+ * can seek it reliably. MediaRecorder WebMs lack a proper Cues block and
+ * the <video> element rejects seeks (snaps currentTime back to 0). MP4
+ * has bulletproof seek tables.
+ *
+ * Uses libx264 with ultrafast preset — fast enough (~3–5× realtime on
+ * Apple Silicon) and produces universally browser-compatible output.
+ * (h264_videotoolbox is faster but its output triggers Chromium decode
+ * errors — VTDecompressionOutputCallback / NSOSStatus -12909.)
+ */
+/**
+ * Re-encode a Chrome MediaRecorder WebM to a SEEKABLE WebM (VP8 + frequent
+ * keyframes). Why this recipe:
+ *
+ *   • VP8 in WebM uses Chromium's software decoder by default — sidesteps
+ *     the macOS VideoToolbox bugs that cause -12909 / decode-failed errors
+ *     on H.264.
+ *   • Forced keyframe every 1 second so timeline clicks seek precisely.
+ *   • libvpx realtime mode — encoding stays under ~1× realtime on M-series.
+ *   • Audio stripped (lives in mic.webm).
+ */
+export function remuxWebm(inputPath, outputPath) {
+  return new Promise((resolve, reject) => {
+    ffmpeg(inputPath)
+      .videoCodec('libvpx')
+      .noAudio()
+      .fps(30)
+      .outputOptions([
+        '-b:v', '3M',
+        '-deadline', 'realtime',
+        '-cpu-used', '4',
+        '-g', '30',                // keyframe every 1 second at 30 fps
+        '-keyint_min', '30',
+        '-pix_fmt', 'yuv420p'
+      ])
+      .save(outputPath)
+      .on('end', () => resolve())
+      .on('error', reject)
+  })
+}
+
 export async function exportMp4(projectPath, project, onProgress) {
   const screenPath = join(projectPath, project.recordings.screen)
   if (!existsSync(screenPath)) {
@@ -138,6 +185,17 @@ export async function exportMp4(projectPath, project, onProgress) {
     : null
   const hasWebcam = webcamPath && existsSync(webcamPath)
 
+  // Audio source-of-truth is now the separate mic.webm (video-only screen.mp4
+  // avoids Chromium decode errors on transcoded AAC). Fall back to screen
+  // audio if the project predates the split (very old recordings).
+  const micPath = project.recordings?.mic
+    ? join(projectPath, project.recordings.mic)
+    : null
+  const hasMicFile = micPath && existsSync(micPath)
+  const micVolume = edit.micMuted ? 0 : (edit.micVolume != null ? edit.micVolume : 1.0)
+  const audioOffsetMs = edit.audioOffsetMs || 0
+  const audioOffsetSec = audioOffsetMs / 1000
+
   const keepSegments = computeKeepSegments(trimStart, trimEnd, cuts)
   if (keepSegments.length === 0) {
     throw new Error('Nothing to export — all content has been cut')
@@ -168,17 +226,43 @@ export async function exportMp4(projectPath, project, onProgress) {
   return new Promise((resolve, reject) => {
     let command = ffmpeg()
 
-    // Input 0: screen recording
+    // Input 0: screen recording (video, no audio — audio is in mic.webm)
     command = command.input(screenPath)
-
-    // Input 1: webcam (if present)
     let nextInputIdx = 1
+
+    // Audio input — prefer mic.webm with optional sync offset; fall back to
+    // the screen file's audio for legacy recordings without mic.webm.
+    let audioInputLabel
+    if (hasMicFile) {
+      if (audioOffsetSec !== 0) {
+        command = command.input(micPath).inputOptions(['-itsoffset', audioOffsetSec.toFixed(3)])
+      } else {
+        command = command.input(micPath)
+      }
+      audioInputLabel = `[${nextInputIdx}:a]`
+      nextInputIdx++
+    } else if (screenInfo.hasAudio) {
+      // Legacy: audio is muxed into the screen file. Add it as a separate
+      // input only if we need to apply an offset.
+      if (audioOffsetSec !== 0) {
+        command = command.input(screenPath).inputOptions(['-itsoffset', audioOffsetSec.toFixed(3)])
+        audioInputLabel = `[${nextInputIdx}:a]`
+        nextInputIdx++
+      } else {
+        audioInputLabel = '[0:a]'
+      }
+    } else {
+      audioInputLabel = null  // no audio anywhere
+    }
+
+    // Webcam input (if present)
     let webcamInputIdx = -1
     if (hasWebcam) {
       command = command.input(webcamPath)
       webcamInputIdx = nextInputIdx
       nextInputIdx++
     }
+
 
     // Image inputs
     const imageInputMap = []
@@ -209,8 +293,8 @@ export async function exportMp4(projectPath, project, onProgress) {
         filters.push(`[0:v]trim=start=${seg.start}:end=${seg.end},setpts=PTS-STARTPTS[sv${i}]`)
         vParts.push(`[sv${i}]`)
 
-        if (screenInfo.hasAudio) {
-          filters.push(`[0:a]atrim=start=${seg.start}:end=${seg.end},asetpts=PTS-STARTPTS[sa${i}]`)
+        if (audioInputLabel) {
+          filters.push(`${audioInputLabel}atrim=start=${seg.start}:end=${seg.end},asetpts=PTS-STARTPTS[sa${i}]`)
           aParts.push(`[sa${i}]`)
         }
       })
@@ -218,25 +302,26 @@ export async function exportMp4(projectPath, project, onProgress) {
       if (keepSegments.length > 1) {
         filters.push(`${vParts.join('')}concat=n=${keepSegments.length}:v=1:a=0[sv_concat]`)
         videoOut = 'sv_concat'
-        if (screenInfo.hasAudio) {
+        if (audioInputLabel) {
           filters.push(`${aParts.join('')}concat=n=${keepSegments.length}:v=0:a=1[sa_concat]`)
           audioOut = 'sa_concat'
         }
       } else {
         videoOut = 'sv0'
-        if (screenInfo.hasAudio) audioOut = 'sa0'
+        if (audioInputLabel) audioOut = 'sa0'
       }
     } else {
       filters.push(`[0:v]trim=start=${trimStart}:end=${trimEnd},setpts=PTS-STARTPTS[sv_trim]`)
       videoOut = 'sv_trim'
-      if (screenInfo.hasAudio) {
-        filters.push(`[0:a]atrim=start=${trimStart}:end=${trimEnd},asetpts=PTS-STARTPTS[sa_trim]`)
+      if (audioInputLabel) {
+        filters.push(`${audioInputLabel}atrim=start=${trimStart}:end=${trimEnd},asetpts=PTS-STARTPTS[sa_trim]`)
         audioOut = 'sa_trim'
       }
     }
 
-    // If no audio in source, generate silent audio
-    if (!screenInfo.hasAudio) {
+    // If no audio source at all, generate a silent track so the output MP4
+    // is well-formed.
+    if (!audioInputLabel) {
       const silenceDuration = computeOutputDuration(keepSegments)
       filters.push(`aevalsrc=0:d=${silenceDuration}[sa_silence]`)
       audioOut = 'sa_silence'
@@ -440,8 +525,14 @@ export async function exportMp4(projectPath, project, onProgress) {
     }
 
     // ── Step 7: Audio mixing ──
+    // Apply recording-audio volume (covers mute too) before mixing in any added audio layers.
+    if (audioInputLabel && micVolume !== 1.0) {
+      filters.push(`[${audioOut}]volume=${micVolume}[mic_vol]`)
+      audioOut = 'mic_vol'
+    }
+
     if (audioAssetInputs.length > 0) {
-      // Mix imported audio layers with original audio
+      // Mix imported audio layers with recording audio
       const audioLabels = [`[${audioOut}]`]
       for (let i = 0; i < audioAssetInputs.length; i++) {
         const { layer } = audioAssetInputs[i]

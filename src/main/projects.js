@@ -37,7 +37,8 @@ export async function createProject(name) {
     thumbnail: null,
     recordings: {
       screen: null,
-      webcam: null
+      webcam: null,
+      mic: null
     },
     edit: {
       trimStart: 0,
@@ -46,6 +47,9 @@ export async function createProject(name) {
       webcamSize: 0.2,
       webcamShape: 'circle',
       speed: 1.0,
+      micVolume: 1.0,
+      micMuted: false,
+      audioOffsetMs: 0,
       cuts: [],
       crop: {
         enabled: false,
@@ -102,6 +106,10 @@ export async function loadProject(id) {
   if (project.edit.backgroundBlur === undefined) project.edit.backgroundBlur = null
   if (project.edit.cursorSpotlight === undefined) project.edit.cursorSpotlight = null
   if (project.edit.zoomKeyframes === undefined) project.edit.zoomKeyframes = []
+  if (project.edit.micVolume === undefined) project.edit.micVolume = 1.0
+  if (project.edit.micMuted === undefined) project.edit.micMuted = false
+  if (project.edit.audioOffsetMs === undefined) project.edit.audioOffsetMs = 0
+  if (project.recordings && project.recordings.mic === undefined) project.recordings.mic = null
 
   return project
 }
@@ -152,8 +160,35 @@ export async function deleteProject(id) {
 
 export async function saveRawRecording(projectId, type, buffer) {
   const projectPath = getProjectPath(projectId)
-  const filename = `${type}.webm`
-  await writeFile(join(projectPath, filename), Buffer.from(buffer))
+  const rawPath = join(projectPath, `${type}.raw.webm`)
+
+  // Write the raw browser-recorded blob to a temp filename.
+  await writeFile(rawPath, Buffer.from(buffer))
+
+  let filename
+  if (type === 'screen' || type === 'webcam') {
+    // Re-encode to a SEEKABLE WebM (VP8 + frequent keyframes). MP4/H.264
+    // hits Chromium's VideoToolbox decoder bugs (-12909) on macOS — VP8
+    // in WebM uses the software decoder and works reliably.
+    filename = `${type}.webm`
+    const finalPath = join(projectPath, filename)
+    try {
+      const { remuxWebm } = await import('./ffmpeg.js')
+      await remuxWebm(rawPath, finalPath)
+      const { unlink } = await import('fs/promises')
+      await unlink(rawPath).catch(() => {})
+    } catch (err) {
+      console.warn(`Transcode failed for ${type}, keeping raw webm:`, err.message)
+      const { rename } = await import('fs/promises')
+      await rename(rawPath, finalPath).catch(() => {})
+    }
+  } else {
+    // Audio-only outputs (mic.webm) stay as WebM — playback as an <audio>
+    // element doesn't have the same seek issues.
+    filename = `${type}.webm`
+    const { rename } = await import('fs/promises')
+    await rename(rawPath, join(projectPath, filename))
+  }
 
   // Update project.json
   const project = await loadProject(projectId)

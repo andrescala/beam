@@ -18,7 +18,16 @@ import {
   importProjectZip
 } from './projects.js'
 import { generateThumbnail, exportMp4, exportGif, extractAudio, detectSilence } from './ffmpeg.js'
+import { transcribeAudio, isWhisperAvailable } from './transcribe.js'
 import { getPreferences, setPreferences } from './preferences.js'
+
+// Force Chromium to use software H.264 decoding. macOS VideoToolbox
+// occasionally throws -12909 (VTDecompressionOutputCallback) on otherwise
+// valid H.264 streams produced by libx264 — especially after seeks. Software
+// decode is rock-solid and the performance hit is negligible for the
+// screen-recording playback we do here.
+app.commandLine.appendSwitch('disable-accelerated-video-decode')
+app.commandLine.appendSwitch('disable-features', 'PlatformHEVCDecoderSupport')
 
 let mainWindow = null
 // The renderer tells us which source to use, then calls getDisplayMedia()
@@ -304,11 +313,43 @@ function registerIpcHandlers() {
     try {
       const project = await loadProject(projectId)
       const projectPath = getProjectPath(projectId)
-      const screenPath = join(projectPath, project.recordings.screen)
+      // Prefer the isolated mic track (cleaner detection); fall back to screen
+      // for older recordings that have mic baked in.
+      const audioFile = project.recordings.mic || project.recordings.screen
+      const audioPath = join(projectPath, audioFile)
 
-      const silences = await detectSilence(screenPath, threshold || -30, minDuration || 0.5)
+      const silences = await detectSilence(audioPath, threshold || -30, minDuration || 0.5)
       return { silences }
     } catch (err) {
+      return { error: err.message }
+    }
+  })
+
+  // Probe whether Whisper is available locally
+  ipcMain.handle('whisper-available', async () => {
+    return { available: isWhisperAvailable() }
+  })
+
+  // Transcribe the recording into caption segments
+  ipcMain.handle('transcribe-recording', async (_event, projectId, opts) => {
+    try {
+      const project = await loadProject(projectId)
+      const projectPath = getProjectPath(projectId)
+      // Prefer the clean mic track; fall back to screen audio for older projects.
+      const audioFile = project.recordings.mic || project.recordings.screen
+      if (!audioFile) {
+        return { error: 'No audio in this recording.' }
+      }
+      const audioPath = join(projectPath, audioFile)
+      const segments = await transcribeAudio(audioPath, opts || {})
+      return { segments }
+    } catch (err) {
+      if (err.code === 'WHISPER_NOT_FOUND') {
+        return {
+          error: 'Whisper is not installed. Run `brew install openai-whisper` (or `pip install openai-whisper`) to enable real captions.',
+          code: 'WHISPER_NOT_FOUND'
+        }
+      }
       return { error: err.message }
     }
   })

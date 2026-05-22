@@ -95,7 +95,7 @@
 
 .ruler {
   position: relative;
-  height: 22px;
+  height: 26px;
   margin: 0 12px 0 92px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
@@ -104,12 +104,70 @@
 .tick {
   position: absolute;
   bottom: 0;
+  top: 0;
   transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  pointer-events: none;
+}
+.tick::after {
+  content: '';
+  width: 1px;
+  height: 8px;
+  background: var(--text3);
+  opacity: 0.5;
 }
 .tick span {
   font-size: 9px;
   font-family: var(--mono);
-  color: var(--text3);
+  color: var(--text2);
+  margin-top: 2px;
+  user-select: none;
+}
+
+.minorTick {
+  position: absolute;
+  bottom: 0;
+  width: 1px;
+  height: 4px;
+  background: var(--text3);
+  opacity: 0.3;
+  transform: translateX(-0.5px);
+  pointer-events: none;
+}
+
+.hoverRulerLabel {
+  position: absolute;
+  top: 2px;
+  transform: translateX(-50%);
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border2);
+  border-radius: 3px;
+  padding: 1px 5px;
+  pointer-events: none;
+  z-index: 6;
+  white-space: nowrap;
+}
+
+.playheadRulerLabel {
+  position: absolute;
+  top: 2px;
+  transform: translateX(-50%);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--danger);
+  border-radius: 3px;
+  padding: 1px 6px;
+  pointer-events: none;
+  z-index: 7;
+  white-space: nowrap;
 }
 
 .tracks {
@@ -182,6 +240,43 @@
   background: rgba(136, 135, 128, 0.1);
   color: var(--text3);
   border: 1px solid var(--border);
+}
+
+.audioClip {
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--text);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  padding: 0 8px;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.audioSlider {
+  flex-shrink: 0;
+  width: 110px;
+  height: 4px;
+  cursor: pointer;
+  accent-color: #10b981;
+}
+.audioSlider:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.audioMuteBtn {
+  flex-shrink: 0;
+  font-size: 9px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 3px;
+  border: 1px solid var(--border2);
+  background: transparent;
+  color: var(--text2);
+  cursor: pointer;
+  font-family: var(--sans);
+}
+.audioMuteBtn:hover {
+  background: var(--bg3);
 }
 
 .trimDimmed {
@@ -281,4 +376,97 @@
   z-index: 10;
   pointer-events: none;
   transform: translateX(-1px);
+}
+
+/* Hover indicator — follows cursor across the track */
+.hoverLine {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.55);
+  z-index: 8;
+  pointer-events: none;
+  transform: translateX(-0.5px);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
+
+.hoverLabel {
+  position: absolute;
+  top: -22px;
+  transform: translateX(-50%);
+  background: var(--bg);
+  border: 1px solid var(--border2);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  z-index: 11;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* Zoom keyframe markers */
+.zoomMarker {
+  position: absolute;
+  top: -16px;
+  transform: translateX(-50%);
+  font-size: 11px;
+  z-index: 7;
+  pointer-events: none;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4));
+}
+
+/* Right-click context menu */
+.menuBackdrop {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  z-index: 999;
+}
+
+.contextMenu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 220px;
+  background: var(--bg);
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  padding: 4px;
+  font-family: var(--sans);
+}
+
+.menuHeader {
+  padding: 6px 12px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+
+.menuItem {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: 12px;
+  font-family: var(--sans);
+  padding: 7px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.menuItem:hover {
+  background: var(--bg3);
+}
+
+.menuDivider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
 }

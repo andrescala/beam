@@ -20,6 +20,7 @@ function Editor() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [currentTime, setCurrentTime] = useState(0)
+  const [seekKey, setSeekKey] = useState(0)
   const [playing, setPlaying] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
@@ -64,6 +65,10 @@ function Editor() {
     if (videoRef.current) {
       videoRef.current.currentTime = time
     }
+    // Signal to VideoPreview that this was an explicit user seek (vs. a
+    // natural time update during playback) — it uses this to sync webcam,
+    // mic, and any other time-bound layers immediately.
+    setSeekKey((k) => k + 1)
   }
 
   function togglePlay() {
@@ -135,6 +140,7 @@ function Editor() {
             projectPath={projectPath}
             videoRef={videoRef}
             currentTime={currentTime}
+            seekKey={seekKey}
             playing={playing}
             onTimeUpdate={setCurrentTime}
             onTogglePlay={togglePlay}
@@ -178,6 +184,7 @@ function Editor() {
                 onSeek={handleSeek}
                 onTrimChange={updateEdit}
                 onCutsChange={updateEdit}
+                onEditChange={updateEdit}
               />
             )}
             {bottomTab === 'layers' && (

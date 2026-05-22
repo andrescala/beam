@@ -32,37 +32,41 @@ function CaptionEditor({ project, projectId, currentTime, onEditChange }) {
   async function handleTranscribe() {
     setTranscribing(true)
     try {
-      // Extract audio first
-      const audioResult = await window.electronAPI.extractAudio(projectId)
-      if (audioResult.error) {
-        showToast('error', `Audio extraction failed: ${audioResult.error}`)
+      showToast('info', 'Transcribing with Whisper — this can take a minute…')
+
+      const result = await window.electronAPI.transcribeRecording(projectId, { model: 'base.en' })
+
+      if (result.code === 'WHISPER_NOT_FOUND') {
+        showToast('error', 'Whisper is not installed. Run: brew install openai-whisper')
+        return
+      }
+      if (result.error) {
+        showToast('error', `Transcription failed: ${result.error}`)
         return
       }
 
-      // Use Web Speech API for transcription (Chromium built-in)
-      // Note: this requires audio playback through SpeechRecognition
-      showToast('info', 'Auto-transcription uses basic speech recognition. For better results, edit captions manually.')
+      const segments = result.segments || []
+      if (segments.length === 0) {
+        showToast('warning', 'Whisper produced no segments (maybe the audio is silent?)')
+        return
+      }
 
-      // Generate basic captions from the recording duration
-      // Split into ~5 second segments as placeholders
-      const duration = project.duration || 0
-      const segmentLength = 5
-      const newCaptions = []
-      for (let t = 0; t < duration; t += segmentLength) {
-        newCaptions.push({
+      const newCaptions = segments
+        .filter((s) => s.text)
+        .map((s) => ({
           id: crypto.randomUUID(),
-          text: `[Caption ${Math.floor(t / segmentLength) + 1}]`,
-          startTime: t,
-          endTime: Math.min(t + segmentLength, duration),
+          text: s.text,
+          startTime: s.start,
+          endTime: s.end,
           fontSize: 20,
           color: '#ffffff',
           background: 'black@0.5'
-        })
-      }
+        }))
 
       onEditChange({ captions: newCaptions })
-      showToast('success', `Generated ${newCaptions.length} caption placeholders. Edit the text for each segment.`)
+      showToast('success', `Transcribed ${newCaptions.length} caption${newCaptions.length === 1 ? '' : 's'}. Edit any that need polish.`)
     } catch (err) {
+      console.error('Transcription error:', err)
       showToast('error', 'Transcription failed')
     } finally {
       setTranscribing(false)
@@ -96,9 +100,9 @@ function CaptionEditor({ project, projectId, currentTime, onEditChange }) {
             className={styles.actionBtn}
             onClick={handleTranscribe}
             disabled={transcribing}
-            title="Generate caption placeholders from recording"
+            title="Transcribe the recording's audio with Whisper"
           >
-            {transcribing ? 'Working...' : 'Auto-generate'}
+            {transcribing ? 'Transcribing…' : 'Transcribe with Whisper'}
           </button>
           <button className={styles.actionBtn} onClick={addCaption} title="Add caption at current time">
             + Add
@@ -115,7 +119,7 @@ function CaptionEditor({ project, projectId, currentTime, onEditChange }) {
         {captions.length === 0 && (
           <div className={styles.empty}>
             No captions yet. Click "Add" to create one at the current playhead position,
-            or "Auto-generate" to create placeholder segments.
+            or "Transcribe with Whisper" to auto-generate captions from the audio.
           </div>
         )}
         {captions.map((caption) => (

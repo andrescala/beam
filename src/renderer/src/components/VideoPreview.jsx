@@ -8,8 +8,9 @@ const WEBCAM_POSITIONS = {
   'top-left': { top: '12px', left: '12px' }
 }
 
-function VideoPreview({ project, projectPath, videoRef, currentTime, playing, onTimeUpdate, onTogglePlay, onEnded }) {
+function VideoPreview({ project, projectPath, videoRef, currentTime, seekKey, playing, onTimeUpdate, onTogglePlay, onEnded }) {
   const webcamRef = useRef(null)
+  const micRef = useRef(null)
 
   const screenSrc = project.recordings?.screen
     ? `project-file://${project.id}/${project.recordings.screen}`
@@ -18,6 +19,16 @@ function VideoPreview({ project, projectPath, videoRef, currentTime, playing, on
   const webcamSrc = project.recordings?.webcam
     ? `project-file://${project.id}/${project.recordings.webcam}`
     : null
+
+  // When a separate mic.webm exists, we play it in parallel with the screen
+  // video (muting screen audio) so the user can apply a sync offset to it.
+  const micSrc = project.recordings?.mic
+    ? `project-file://${project.id}/${project.recordings.mic}`
+    : null
+
+  const micVolume = project.edit?.micMuted ? 0 : (project.edit?.micVolume != null ? project.edit.micVolume : 1.0)
+  const audioOffsetMs = project.edit?.audioOffsetMs || 0
+  const audioOffsetSec = audioOffsetMs / 1000
 
   const webcamPos = WEBCAM_POSITIONS[project.edit?.webcamPosition] || WEBCAM_POSITIONS['bottom-right']
   const webcamSize = Math.round((project.edit?.webcamSize || 0.2) * 100)
@@ -42,32 +53,86 @@ function VideoPreview({ project, projectPath, videoRef, currentTime, playing, on
     (img) => currentTime >= (img.startTime || 0) && (img.endTime == null || currentTime <= img.endTime)
   )
 
-  // Sync playback rate with speed setting
+  // Sync playback rate across all three media elements
   useEffect(() => {
-    if (videoRef.current) {
-      videoRef.current.playbackRate = speed
-    }
-    if (webcamRef.current) {
-      webcamRef.current.playbackRate = speed
-    }
+    if (videoRef.current) videoRef.current.playbackRate = speed
+    if (webcamRef.current) webcamRef.current.playbackRate = speed
+    if (micRef.current) micRef.current.playbackRate = speed
   }, [speed])
 
-  // Sync webcam video with main video playback
+  // When we have a separate mic.webm, mute the screen's baked-in audio and
+  // play mic separately (so the user's audio-offset slider can shift it).
   useEffect(() => {
-    if (!webcamRef.current) return
-    if (playing) {
-      webcamRef.current.play().catch(() => {})
+    if (!videoRef.current) return
+    if (micSrc) {
+      videoRef.current.muted = true
     } else {
-      webcamRef.current.pause()
+      videoRef.current.muted = false
+      videoRef.current.volume = Math.max(0, Math.min(1, micVolume))
+    }
+  }, [micSrc])
+
+  // Mic volume control (when mic.webm is the audio source)
+  useEffect(() => {
+    if (micRef.current) {
+      micRef.current.volume = Math.max(0, Math.min(1, micVolume))
+    }
+  }, [micVolume])
+
+  // Sync webcam + mic with main video on play/pause. We always read the
+  // live video element's currentTime (not the prop, which can be stale) and
+  // snap the secondary elements to it BEFORE play resumes — otherwise they
+  // would drift / appear to restart.
+  useEffect(() => {
+    const v = videoRef.current
+    if (!v) return
+    const t = v.currentTime
+
+    if (webcamRef.current) {
+      webcamRef.current.currentTime = t
+      if (playing) webcamRef.current.play().catch(() => {})
+      else webcamRef.current.pause()
+    }
+    if (micRef.current) {
+      micRef.current.currentTime = Math.max(0, t - audioOffsetSec)
+      if (playing) micRef.current.play().catch(() => {})
+      else micRef.current.pause()
     }
   }, [playing])
 
-  // Sync webcam seek with main video
+  // Explicit-seek sync: when handleSeek is called in Editor (timeline click,
+  // keyboard shortcut, etc.), `seekKey` increments. We hard-sync all
+  // secondary elements to the video's actual currentTime, even if playback
+  // is in progress, so webcam + mic don't keep playing from their previous
+  // positions after a timeline jump.
   useEffect(() => {
-    if (webcamRef.current && !playing) {
-      webcamRef.current.currentTime = currentTime
+    const v = videoRef.current
+    if (!v) return
+    const t = v.currentTime
+    if (webcamRef.current) webcamRef.current.currentTime = t
+    if (micRef.current) {
+      micRef.current.currentTime = Math.max(0, t - audioOffsetSec)
     }
-  }, [currentTime])
+  }, [seekKey])
+
+  // Natural time updates during playback: only re-sync when paused (so
+  // scrubbing keeps things aligned). During playback we let the elements
+  // play on their own clocks to avoid stutter from constant seeks.
+  useEffect(() => {
+    if (!playing) {
+      if (webcamRef.current) webcamRef.current.currentTime = currentTime
+      if (micRef.current) {
+        micRef.current.currentTime = Math.max(0, currentTime - audioOffsetSec)
+      }
+    }
+  }, [currentTime, audioOffsetSec])
+
+  // Note: we deliberately don't do periodic "drift correction" during
+  // playback. Seeking a <video>/<audio> while playing causes the browser to
+  // re-decode from the nearest keyframe, producing a visible/audible
+  // stutter or "loop" effect. Initial sync at play() + re-sync on
+  // pause/scrub is enough for short recordings; long ones may drift a
+  // little but that's preferable to constant stutters.
 
   function handleTimeUpdate() {
     if (videoRef.current) {
@@ -119,6 +184,16 @@ function VideoPreview({ project, projectPath, videoRef, currentTime, playing, on
                   height: `${crop.height * 100}%`
                 }} />
               </>
+            )}
+
+            {/* Mic audio (parallel track — lets the user apply a sync offset) */}
+            {micSrc && (
+              <audio
+                ref={micRef}
+                src={micSrc}
+                preload="auto"
+                onError={(e) => console.error('Mic audio error:', e.target.error)}
+              />
             )}
 
             {/* Webcam overlay */}

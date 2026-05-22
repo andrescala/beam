@@ -9,14 +9,17 @@ export default function useRecorder() {
 
   const screenRecorderRef = useRef(null)
   const webcamRecorderRef = useRef(null)
+  const micRecorderRef = useRef(null)
   const screenChunksRef = useRef([])
   const webcamChunksRef = useRef([])
+  const micChunksRef = useRef([])
   const timerRef = useRef(null)
   const startTimeRef = useRef(0)
   const elapsedBeforePauseRef = useRef(0)
   const projectIdRef = useRef(null)
   const screenStreamRef = useRef(null)
   const webcamStreamRef = useRef(null)
+  const micStreamRef = useRef(null)
   // Track elapsed in a ref so the onstop closure always has the latest value
   const elapsedRef = useRef(0)
 
@@ -42,27 +45,30 @@ export default function useRecorder() {
     if (webcamStreamRef.current) {
       webcamStreamRef.current.getTracks().forEach((t) => t.stop())
     }
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach((t) => t.stop())
+    }
   }
 
   function selectSource(source) {
     setSelectedSource(source)
   }
 
-  function startCountdown() {
+  // Pre-warm everything before the countdown so the moment it ends we can
+  // call MediaRecorder.start() instantly with no async setup gap. This
+  // prevents the recorder from missing the first 300–500ms after countdown
+  // (and stops Chrome from dumping buffered "warmup" audio into the file).
+  async function startCountdown() {
     if (!selectedSource) return
-    setState('countdown')
-  }
-
-  async function startRecording() {
     try {
-      // Create project first
+      // Create project + acquire all streams + build recorders, BUT do not
+      // call .start() yet. The Countdown component's onComplete will call
+      // startRecording() which just fires the .start()s synchronously.
       const project = await window.electronAPI.createProject(
         `Recording — ${new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`
       )
       projectIdRef.current = project.id
 
-      // Tell main process which source we want, then call getDisplayMedia
-      // The main process setDisplayMediaRequestHandler will intercept and provide it
       await window.electronAPI.setCaptureSource(selectedSource.id)
 
       const screenStream = await navigator.mediaDevices.getDisplayMedia({
@@ -71,57 +77,96 @@ export default function useRecorder() {
       })
       screenStreamRef.current = screenStream
 
-      console.log('Screen stream acquired:', screenStream.getVideoTracks().length, 'video tracks')
-
-      // Get microphone separately
+      // CRITICAL for sync: disable Chrome's default audio processing
+      // (echoCancellation / noiseSuppression / autoGainControl) which adds
+      // 100–500ms of latency to the captured audio stream.
       let micStream = null
       try {
-        micStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        micStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+            channelCount: 1,
+            sampleRate: 48000
+          }
+        })
+        micStreamRef.current = micStream
       } catch {
         console.warn('Microphone not available')
       }
 
-      // Merge screen video + mic audio into one stream
-      const tracks = [...screenStream.getVideoTracks()]
-      if (micStream) {
-        tracks.push(...micStream.getAudioTracks())
-      }
-      const combinedStream = new MediaStream(tracks)
-
-      // Pick codec
-      const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
-        ? 'video/webm;codecs=vp9'
-        : 'video/webm;codecs=vp8'
-
-      // Screen recorder
-      screenChunksRef.current = []
-      const screenRecorder = new MediaRecorder(combinedStream, { mimeType })
-      screenRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) screenChunksRef.current.push(e.data)
-      }
-      screenRecorderRef.current = screenRecorder
-      screenRecorder.start(1000)
-
-      // Webcam recorder
+      // Optional webcam stream (warmed up here too)
+      let wcStream = null
       if (webcamEnabled) {
         try {
-          const wcStream = await navigator.mediaDevices.getUserMedia({
+          wcStream = await navigator.mediaDevices.getUserMedia({
             video: { width: 640, height: 480 }
           })
           webcamStreamRef.current = wcStream
           setWebcamStream(wcStream)
-
-          webcamChunksRef.current = []
-          const wcRecorder = new MediaRecorder(wcStream, { mimeType })
-          wcRecorder.ondataavailable = (e) => {
-            if (e.data.size > 0) webcamChunksRef.current.push(e.data)
-          }
-          webcamRecorderRef.current = wcRecorder
-          wcRecorder.start(1000)
         } catch (err) {
-          console.warn('Webcam recording failed:', err)
+          console.warn('Webcam stream failed:', err)
         }
       }
+
+      // Codecs
+      const videoMime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+        ? 'video/webm;codecs=vp9'
+        : 'video/webm;codecs=vp8'
+      const audioMime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : 'audio/webm'
+
+      // Build recorders (but DO NOT start them yet)
+      const tracks = [...screenStream.getVideoTracks()]
+      if (micStream) tracks.push(...micStream.getAudioTracks())
+      const combinedStream = new MediaStream(tracks)
+
+      screenChunksRef.current = []
+      const screenRecorder = new MediaRecorder(combinedStream, { mimeType: videoMime })
+      screenRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) screenChunksRef.current.push(e.data)
+      }
+      screenRecorderRef.current = screenRecorder
+
+      if (micStream) {
+        micChunksRef.current = []
+        const micRecorder = new MediaRecorder(micStream, { mimeType: audioMime })
+        micRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) micChunksRef.current.push(e.data)
+        }
+        micRecorderRef.current = micRecorder
+      }
+
+      if (wcStream) {
+        webcamChunksRef.current = []
+        const wcRecorder = new MediaRecorder(wcStream, { mimeType: videoMime })
+        wcRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) webcamChunksRef.current.push(e.data)
+        }
+        webcamRecorderRef.current = wcRecorder
+      }
+
+      // Now enter countdown — streams are live and warm, recorders ready
+      // to fire instantly when onComplete calls startRecording().
+      setState('countdown')
+    } catch (err) {
+      console.error('Failed to prepare recording:', err)
+      cleanup()
+      setState('idle')
+      throw err
+    }
+  }
+
+  // Called when the countdown reaches 0. Fires all recorders in immediate
+  // succession (synchronous JS — sub-millisecond delta) so the captured
+  // audio/video are aligned at the moment "1!" disappears.
+  function startRecording() {
+    try {
+      if (screenRecorderRef.current) screenRecorderRef.current.start(1000)
+      if (micRecorderRef.current) micRecorderRef.current.start(1000)
+      if (webcamRecorderRef.current) webcamRecorderRef.current.start(1000)
 
       // Timer
       startTimeRef.current = Date.now()
@@ -136,8 +181,9 @@ export default function useRecorder() {
       setState('recording')
     } catch (err) {
       console.error('Failed to start recording:', err)
+      cleanup()
       setState('idle')
-      throw err // Let caller handle with toast
+      throw err
     }
   }
 
@@ -147,6 +193,9 @@ export default function useRecorder() {
     }
     if (webcamRecorderRef.current?.state === 'recording') {
       webcamRecorderRef.current.pause()
+    }
+    if (micRecorderRef.current?.state === 'recording') {
+      micRecorderRef.current.pause()
     }
     elapsedBeforePauseRef.current += (Date.now() - startTimeRef.current) / 1000
     clearInterval(timerRef.current)
@@ -159,6 +208,9 @@ export default function useRecorder() {
     }
     if (webcamRecorderRef.current?.state === 'paused') {
       webcamRecorderRef.current.resume()
+    }
+    if (micRecorderRef.current?.state === 'paused') {
+      micRecorderRef.current.resume()
     }
     startTimeRef.current = Date.now()
     timerRef.current = setInterval(() => {
@@ -199,6 +251,19 @@ export default function useRecorder() {
       recorder.stop()
     })
 
+    // Collect mic chunks the same way
+    const micBlobPromise = new Promise((resolve) => {
+      const recorder = micRecorderRef.current
+      if (!recorder || recorder.state === 'inactive') {
+        resolve(null)
+        return
+      }
+      recorder.onstop = () => {
+        resolve(new Blob(micChunksRef.current, { type: 'audio/webm' }))
+      }
+      recorder.stop()
+    })
+
     // Stop all media tracks (after calling .stop() on recorders)
     if (screenStreamRef.current) {
       screenStreamRef.current.getTracks().forEach((t) => t.stop())
@@ -206,10 +271,17 @@ export default function useRecorder() {
     if (webcamStreamRef.current) {
       webcamStreamRef.current.getTracks().forEach((t) => t.stop())
     }
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach((t) => t.stop())
+    }
 
     // Wait for blobs, then save them
     try {
-      const [screenBlob, webcamBlob] = await Promise.all([screenBlobPromise, webcamBlobPromise])
+      const [screenBlob, webcamBlob, micBlob] = await Promise.all([
+        screenBlobPromise,
+        webcamBlobPromise,
+        micBlobPromise
+      ])
 
       const projectId = projectIdRef.current
       const finalElapsed = elapsedRef.current
@@ -228,6 +300,13 @@ export default function useRecorder() {
         const buffer = await webcamBlob.arrayBuffer()
         await window.electronAPI.saveRawRecording(projectId, 'webcam', buffer)
         console.log(`Webcam recording saved: ${(webcamBlob.size / 1024 / 1024).toFixed(1)} MB`)
+      }
+
+      // Save mic recording (separate audio file — volume is controllable in editor)
+      if (micBlob && micBlob.size > 0) {
+        const buffer = await micBlob.arrayBuffer()
+        await window.electronAPI.saveRawRecording(projectId, 'mic', buffer)
+        console.log(`Mic recording saved: ${(micBlob.size / 1024 / 1024).toFixed(1)} MB`)
       }
 
       // Update project with duration

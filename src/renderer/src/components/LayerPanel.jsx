@@ -327,6 +327,77 @@ function LayerPanel({ project, projectId, currentTime, onEditChange }) {
         )}
       </div>
 
+      {/* Recording audio (mic) */}
+      {project.recordings?.mic && (
+        <div className={styles.section}>
+          <div className={styles.sectionHeader} onClick={() => toggleSection('mic')} role="button" tabIndex={0}>
+            <span>{expandedSection === 'mic' ? '▼' : '▶'} Recording audio</span>
+            <span className={styles.propValue} style={{ marginRight: 8 }}>
+              {edit.micMuted ? 'Muted' : `${Math.round((edit.micVolume ?? 1.0) * 100)}%`}
+            </span>
+          </div>
+          {expandedSection === 'mic' && (
+            <div className={styles.sectionBody}>
+              <div className={styles.layerCard}>
+                <div className={styles.layerProps}>
+                  <div className={styles.propRow}>
+                    <label>Volume</label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="200"
+                      className={styles.slider}
+                      value={Math.round((edit.micVolume ?? 1.0) * 100)}
+                      onChange={(e) => onEditChange({ micVolume: parseInt(e.target.value) / 100 })}
+                      disabled={edit.micMuted}
+                    />
+                    <span className={styles.propValue}>{Math.round((edit.micVolume ?? 1.0) * 100)}%</span>
+                  </div>
+                  <div className={styles.propRow}>
+                    <label>Mute</label>
+                    <input
+                      type="checkbox"
+                      checked={!!edit.micMuted}
+                      onChange={(e) => onEditChange({ micMuted: e.target.checked })}
+                    />
+                  </div>
+                  <div className={styles.propRow}>
+                    <label>Sync offset</label>
+                    <input
+                      type="range"
+                      min="-1000"
+                      max="1000"
+                      step="10"
+                      className={styles.slider}
+                      value={edit.audioOffsetMs || 0}
+                      onChange={(e) => onEditChange({ audioOffsetMs: parseInt(e.target.value) })}
+                    />
+                    <span className={styles.propValue}>
+                      {edit.audioOffsetMs > 0 ? '+' : ''}{edit.audioOffsetMs || 0} ms
+                    </span>
+                  </div>
+                  <div className={styles.propRow}>
+                    <label></label>
+                    <button
+                      className={styles.playheadBtn}
+                      onClick={() => onEditChange({ audioOffsetMs: 0 })}
+                      title="Reset offset to 0"
+                      style={{ width: 'auto', padding: '2px 10px' }}
+                    >
+                      Reset
+                    </button>
+                  </div>
+                  <div className={styles.empty} style={{ fontSize: 11, marginTop: 4, lineHeight: 1.4 }}>
+                    <strong>Volume:</strong> 0–200%, applies to preview &amp; export.<br/>
+                    <strong>Sync offset:</strong> nudge audio earlier (−) or later (+) to align with the video. Tune by ear in preview, then export.
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Audio Layers */}
       <div className={styles.section}>
         <div className={styles.sectionHeader} onClick={() => toggleSection('audio')} role="button" tabIndex={0}>
