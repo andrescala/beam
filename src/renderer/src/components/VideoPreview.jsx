@@ -11,13 +11,17 @@ const WEBCAM_POSITIONS = {
 function VideoPreview({ project, projectPath, videoRef, currentTime, seekKey, playing, onTimeUpdate, onTogglePlay, onEnded }) {
   const webcamRef = useRef(null)
   const micRef = useRef(null)
+  const systemRef = useRef(null)
 
-  const screenSrc = project.recordings?.screen
-    ? `project-file://${project.id}/${project.recordings.screen}`
+  // The editor plays the seekable proxy; export always uses the master.
+  const screenFile = project.recordings?.screenProxy || project.recordings?.screen
+  const screenSrc = screenFile
+    ? `project-file://${project.id}/${screenFile}`
     : null
 
-  const webcamSrc = project.recordings?.webcam
-    ? `project-file://${project.id}/${project.recordings.webcam}`
+  const webcamFile = project.recordings?.webcamProxy || project.recordings?.webcam
+  const webcamSrc = webcamFile
+    ? `project-file://${project.id}/${webcamFile}`
     : null
 
   // When a separate mic.webm exists, we play it in parallel with the screen
@@ -26,7 +30,13 @@ function VideoPreview({ project, projectPath, videoRef, currentTime, seekKey, pl
     ? `project-file://${project.id}/${project.recordings.mic}`
     : null
 
+  // System audio (loopback) plays as another parallel track.
+  const systemSrc = project.recordings?.system
+    ? `project-file://${project.id}/${project.recordings.system}`
+    : null
+
   const micVolume = project.edit?.micMuted ? 0 : (project.edit?.micVolume != null ? project.edit.micVolume : 1.0)
+  const systemVolume = project.edit?.systemMuted ? 0 : (project.edit?.systemVolume != null ? project.edit.systemVolume : 1.0)
   const audioOffsetMs = project.edit?.audioOffsetMs || 0
   const audioOffsetSec = audioOffsetMs / 1000
 
@@ -53,11 +63,12 @@ function VideoPreview({ project, projectPath, videoRef, currentTime, seekKey, pl
     (img) => currentTime >= (img.startTime || 0) && (img.endTime == null || currentTime <= img.endTime)
   )
 
-  // Sync playback rate across all three media elements
+  // Sync playback rate across all parallel media elements
   useEffect(() => {
     if (videoRef.current) videoRef.current.playbackRate = speed
     if (webcamRef.current) webcamRef.current.playbackRate = speed
     if (micRef.current) micRef.current.playbackRate = speed
+    if (systemRef.current) systemRef.current.playbackRate = speed
   }, [speed])
 
   // When we have a separate mic.webm, mute the screen's baked-in audio and
@@ -79,6 +90,13 @@ function VideoPreview({ project, projectPath, videoRef, currentTime, seekKey, pl
     }
   }, [micVolume])
 
+  // System-audio volume control
+  useEffect(() => {
+    if (systemRef.current) {
+      systemRef.current.volume = Math.max(0, Math.min(1, systemVolume))
+    }
+  }, [systemVolume])
+
   // Sync webcam + mic with main video on play/pause. We always read the
   // live video element's currentTime (not the prop, which can be stale) and
   // snap the secondary elements to it BEFORE play resumes — otherwise they
@@ -98,6 +116,11 @@ function VideoPreview({ project, projectPath, videoRef, currentTime, seekKey, pl
       if (playing) micRef.current.play().catch(() => {})
       else micRef.current.pause()
     }
+    if (systemRef.current) {
+      systemRef.current.currentTime = t
+      if (playing) systemRef.current.play().catch(() => {})
+      else systemRef.current.pause()
+    }
   }, [playing])
 
   // Explicit-seek sync: when handleSeek is called in Editor (timeline click,
@@ -113,6 +136,7 @@ function VideoPreview({ project, projectPath, videoRef, currentTime, seekKey, pl
     if (micRef.current) {
       micRef.current.currentTime = Math.max(0, t - audioOffsetSec)
     }
+    if (systemRef.current) systemRef.current.currentTime = t
   }, [seekKey])
 
   // Natural time updates during playback: only re-sync when paused (so
@@ -124,6 +148,7 @@ function VideoPreview({ project, projectPath, videoRef, currentTime, seekKey, pl
       if (micRef.current) {
         micRef.current.currentTime = Math.max(0, currentTime - audioOffsetSec)
       }
+      if (systemRef.current) systemRef.current.currentTime = currentTime
     }
   }, [currentTime, audioOffsetSec])
 
@@ -193,6 +218,16 @@ function VideoPreview({ project, projectPath, videoRef, currentTime, seekKey, pl
                 src={micSrc}
                 preload="auto"
                 onError={(e) => console.error('Mic audio error:', e.target.error)}
+              />
+            )}
+
+            {/* System audio (parallel track) */}
+            {systemSrc && (
+              <audio
+                ref={systemRef}
+                src={systemSrc}
+                preload="auto"
+                onError={(e) => console.error('System audio error:', e.target.error)}
               />
             )}
 

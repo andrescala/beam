@@ -24,7 +24,7 @@ const electronAPI = {
   deleteAsset: (projectId, filename) => ipcRenderer.invoke('delete-asset', projectId, filename),
 
   // Processing
-  processRecording: (projectId, format) => ipcRenderer.invoke('process-recording', projectId, format),
+  processRecording: (projectId, format, options) => ipcRenderer.invoke('process-recording', projectId, format, options),
   generateThumbnail: (projectId) => ipcRenderer.invoke('generate-thumbnail', projectId),
   extractAudio: (projectId) => ipcRenderer.invoke('extract-audio', projectId),
   detectSilence: (projectId, threshold, minDuration) =>
@@ -53,6 +53,16 @@ const electronAPI = {
     const handler = (_event, progress) => callback(progress)
     ipcRenderer.on('export-progress', handler)
     return () => ipcRenderer.removeListener('export-progress', handler)
+  },
+  onTrayNewRecording: (callback) => {
+    const handler = () => callback()
+    ipcRenderer.on('tray-new-recording', handler)
+    return () => ipcRenderer.removeListener('tray-new-recording', handler)
+  },
+  onShortcutRecordToggle: (callback) => {
+    const handler = () => callback()
+    ipcRenderer.on('shortcut-record-toggle', handler)
+    return () => ipcRenderer.removeListener('shortcut-record-toggle', handler)
   }
 }
 

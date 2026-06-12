@@ -16,9 +16,11 @@ function Recorder() {
     elapsed,
     selectedSource,
     webcamEnabled,
+    systemAudioEnabled,
     webcamStream,
     selectSource,
     setWebcamEnabled,
+    setSystemAudioEnabled,
     startCountdown,
     startRecording,
     pauseRecording,
@@ -70,6 +72,18 @@ function Recorder() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [state, pauseRecording, resumeRecording, handleStop])
 
+  // Global record hotkey (Cmd/Ctrl+Shift+R): stop if recording. App.jsx
+  // routes the event here when this view is already mounted.
+  useEffect(() => {
+    function handleRecordToggle() {
+      if (state === 'recording' || state === 'paused') {
+        handleStop()
+      }
+    }
+    window.addEventListener('beam:record-toggle', handleRecordToggle)
+    return () => window.removeEventListener('beam:record-toggle', handleRecordToggle)
+  }, [state, handleStop])
+
   if (state === 'idle') {
     return (
       <SourcePicker
@@ -77,6 +91,8 @@ function Recorder() {
         onCancel={() => navigate('/')}
         webcamEnabled={webcamEnabled}
         onWebcamToggle={setWebcamEnabled}
+        systemAudioEnabled={systemAudioEnabled}
+        onSystemAudioToggle={setSystemAudioEnabled}
         onStart={startCountdown}
         selectedSource={selectedSource}
       />

@@ -8,10 +8,13 @@ Built as a free alternative to Loom.
 
 ### Recording
 - **Source selection** — pick a full screen, window, or display from a thumbnail grid
-- **Microphone audio** — captured and merged into the recording
-- **Webcam overlay** — circular or rectangular webcam bubble, position and size adjustable
+- **Microphone audio** — captured as a separate track, with device picker
+- **System audio** — capture app/system sound (loopback) as its own track with independent volume/mute
+- **Webcam overlay** — up to 1080p, circular or rectangular bubble, position and size adjustable, camera picker
+- **Master + proxy** — the original capture is stored untouched (full quality for export); a seekable proxy is generated for smooth editing
 - **Pause / resume** — pause mid-recording with accurate timer sync
 - **3-2-1 countdown** — gives you time to switch to the target window
+- **Tray & global hotkey** — quick-record from the system tray; Cmd/Ctrl+Shift+R starts/stops from anywhere
 
 ### Editor
 - **Video preview** — scrub through the recording with synced webcam overlay
@@ -25,6 +28,8 @@ Built as a free alternative to Loom.
 - **Audio layers** — import background music or SFX with volume control and start time
 - **Captions** — caption editor with timing, auto-generation, and SRT export
 - **Webcam controls** — adjust position (corners), size (10-50%), and shape (circle/rectangle)
+- **Undo / redo** — full edit history (Cmd/Ctrl+Z, Cmd/Ctrl+Shift+Z) with toolbar buttons
+- **Keyboard-first** — Space play/pause, ←/→ frame step (Shift for 1s), Home/End jump, I/O set trim in/out, ? opens help
 - **Non-destructive** — all edits are metadata in `project.json`; raw files are never modified
 - **Re-export** — change settings and export again without re-recording
 
@@ -44,6 +49,8 @@ Built as a free alternative to Loom.
 
 ### Export
 - **MP4 (H.264)** — high-quality export via FFmpeg with all effects and overlays
+- **Quality & resolution options** — High/Balanced/Smaller (CRF 18/23/28); Source/1080p/720p output scaling
+- **Loudness normalization** — optional −14 LUFS target for social/YouTube
 - **GIF** — palette-optimized animated GIF export (640px, 15fps)
 - **SRT subtitles** — export captions as standard SRT subtitle files
 - **Circular webcam mask** — webcam is cropped to a square, scaled, and masked into a perfect circle
@@ -99,13 +106,19 @@ src/
 
 ```
 ~/Beam/projects/{uuid}/
-  project.json      # All project metadata and edit state
-  screen.webm       # Raw screen recording
-  webcam.webm       # Raw webcam recording (if enabled)
-  thumb.jpg         # Auto-generated thumbnail
-  assets/           # Imported images and audio files
-  exports/          # Exported MP4/GIF files
+  project.json        # All project metadata and edit state
+  screen-master.webm  # Untouched original capture (used for export)
+  screen.webm         # Seekable editing proxy (used for preview)
+  webcam-master.webm  # Untouched webcam capture (if enabled)
+  webcam.webm         # Webcam editing proxy
+  mic.webm            # Microphone track
+  system.webm         # System-audio track (if enabled)
+  thumb.jpg           # Auto-generated thumbnail
+  assets/             # Imported images and audio files
+  exports/            # Exported MP4/GIF files
 ```
+
+Projects created before the master/proxy split (a single re-encoded `screen.webm`) still open — the proxy doubles as the master for them.
 
 ## Tech stack
 
@@ -263,6 +276,19 @@ Screenshots from `test:screenshots` are saved to `e2e/screenshots/` for visual r
 - [x] Asset library (media browser with import, preview, one-click layers)
 - [x] Help system (welcome walkthrough + help drawer with tutorials)
 - [ ] Keystroke display HUD (requires native module — deferred)
+
+### Phase 4 — Foundation (P0 from [docs/GAP_ANALYSIS.md](docs/GAP_ANALYSIS.md))
+- [x] Master/proxy split — originals are never re-encoded; proxies handle seeking
+- [x] System audio capture (separate track with volume/mute)
+- [x] Undo/redo command history in the editor
+- [x] Editor keyboard shortcuts (frame step, trim in/out, jump)
+- [x] Mic & camera device pickers, 1080p webcam capture
+- [x] Tray quick-record + global record hotkey (Cmd/Ctrl+Shift+R)
+- [x] Export quality (CRF), resolution presets, loudness normalization
+- [ ] Bundled whisper.cpp transcription (zero-setup captions)
+- [ ] Hardware-accelerated export encoding
+
+See [docs/SPEC.md](docs/SPEC.md) for the full product spec and [docs/GAP_ANALYSIS.md](docs/GAP_ANALYSIS.md) for the prioritized roadmap (external video import, multi-track timeline, social export presets, AI copilot).
 
 ## License
 

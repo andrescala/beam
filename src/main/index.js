@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, desktopCapturer, systemPreferences, dialog, session, protocol } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, desktopCapturer, systemPreferences, dialog, session, protocol, Tray, Menu, globalShortcut, nativeImage } from 'electron'
 import { join } from 'path'
 import { readFile } from 'fs/promises'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -30,8 +30,58 @@ app.commandLine.appendSwitch('disable-accelerated-video-decode')
 app.commandLine.appendSwitch('disable-features', 'PlatformHEVCDecoderSupport')
 
 let mainWindow = null
+let tray = null
 // The renderer tells us which source to use, then calls getDisplayMedia()
 let pendingSourceId = null
+
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow()
+    return
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+function createTray() {
+  try {
+    const iconPath = join(__dirname, '../../resources/tray-icon-32.png')
+    let image = nativeImage.createFromPath(iconPath)
+    if (image.isEmpty()) return
+    if (process.platform === 'darwin') {
+      image = image.resize({ width: 18, height: 18 })
+    }
+    tray = new Tray(image)
+    tray.setToolTip('Beam')
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: 'Open Beam', click: () => showMainWindow() },
+      {
+        label: 'New Recording',
+        click: () => {
+          showMainWindow()
+          mainWindow?.webContents.send('tray-new-recording')
+        }
+      },
+      { type: 'separator' },
+      { label: 'Quit Beam', click: () => app.quit() }
+    ]))
+    tray.on('click', () => showMainWindow())
+  } catch (err) {
+    console.warn('Tray setup failed:', err.message)
+  }
+}
+
+function registerGlobalShortcuts() {
+  try {
+    globalShortcut.register('CommandOrControl+Shift+R', () => {
+      showMainWindow()
+      mainWindow?.webContents.send('shortcut-record-toggle')
+    })
+  } catch (err) {
+    console.warn('Global shortcut registration failed:', err.message)
+  }
+}
 
 function createWindow() {
   const prefs = getPreferences()
@@ -207,7 +257,7 @@ function registerIpcHandlers() {
   })
 
   // Processing
-  ipcMain.handle('process-recording', async (_event, projectId, format) => {
+  ipcMain.handle('process-recording', async (_event, projectId, format, options) => {
     try {
       const project = await loadProject(projectId)
       const projectPath = getProjectPath(projectId)
@@ -222,7 +272,7 @@ function registerIpcHandlers() {
       if (format === 'gif') {
         outputPath = await exportGif(projectPath, project, progressCallback)
       } else {
-        outputPath = await exportMp4(projectPath, project, progressCallback)
+        outputPath = await exportMp4(projectPath, project, progressCallback, options || {})
       }
 
       // Update project with last export path
@@ -500,10 +550,16 @@ if (!gotTheLock) {
     })
 
     createWindow()
+    createTray()
+    registerGlobalShortcuts()
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
     })
+  })
+
+  app.on('will-quit', () => {
+    globalShortcut.unregisterAll()
   })
 
   app.on('window-all-closed', () => {

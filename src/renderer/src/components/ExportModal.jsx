@@ -6,6 +6,9 @@ function ExportModal({ project, onClose }) {
   const [exportPath, setExportPath] = useState(null)
   const [error, setError] = useState(null)
   const [format, setFormat] = useState('mp4')
+  const [quality, setQuality] = useState('balanced')
+  const [resolution, setResolution] = useState('source')
+  const [normalizeLoudness, setNormalizeLoudness] = useState(false)
 
   useEffect(() => {
     const cleanup = window.electronAPI.onExportProgress((p) => {
@@ -19,7 +22,11 @@ function ExportModal({ project, onClose }) {
       setProgress(0)
       setError(null)
 
-      const result = await window.electronAPI.processRecording(project.id, format)
+      const result = await window.electronAPI.processRecording(project.id, format, {
+        quality,
+        resolution,
+        normalizeLoudness
+      })
       if (result.error) {
         setError(result.error)
         setProgress(null)
@@ -77,6 +84,45 @@ function ExportModal({ project, onClose }) {
                   <span className={styles.formatDesc}>Animated image</span>
                 </button>
               </div>
+
+              {format === 'mp4' && (
+                <div className={styles.optionsBlock}>
+                  <div className={styles.optionRow}>
+                    <span>Quality</span>
+                    <select
+                      className={styles.optionSelect}
+                      value={quality}
+                      onChange={(e) => setQuality(e.target.value)}
+                    >
+                      <option value="high">High (larger file)</option>
+                      <option value="balanced">Balanced</option>
+                      <option value="small">Smaller file</option>
+                    </select>
+                  </div>
+                  <div className={styles.optionRow}>
+                    <span>Resolution</span>
+                    <select
+                      className={styles.optionSelect}
+                      value={resolution}
+                      onChange={(e) => setResolution(e.target.value)}
+                    >
+                      <option value="source">Source (original)</option>
+                      <option value="1080p">1080p</option>
+                      <option value="720p">720p</option>
+                    </select>
+                  </div>
+                  <div className={styles.optionRow}>
+                    <label className={styles.optionCheck}>
+                      <input
+                        type="checkbox"
+                        checked={normalizeLoudness}
+                        onChange={(e) => setNormalizeLoudness(e.target.checked)}
+                      />
+                      <span>Normalize loudness (−14 LUFS, social/YouTube)</span>
+                    </label>
+                  </div>
+                </div>
+              )}
 
               <div className={styles.info}>
                 <div className={styles.row}>

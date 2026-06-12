@@ -37,8 +37,11 @@ export async function createProject(name) {
     thumbnail: null,
     recordings: {
       screen: null,
+      screenProxy: null,
       webcam: null,
-      mic: null
+      webcamProxy: null,
+      mic: null,
+      system: null
     },
     edit: {
       trimStart: 0,
@@ -49,6 +52,8 @@ export async function createProject(name) {
       speed: 1.0,
       micVolume: 1.0,
       micMuted: false,
+      systemVolume: 1.0,
+      systemMuted: false,
       audioOffsetMs: 0,
       cuts: [],
       crop: {
@@ -108,8 +113,19 @@ export async function loadProject(id) {
   if (project.edit.zoomKeyframes === undefined) project.edit.zoomKeyframes = []
   if (project.edit.micVolume === undefined) project.edit.micVolume = 1.0
   if (project.edit.micMuted === undefined) project.edit.micMuted = false
+  if (project.edit.systemVolume === undefined) project.edit.systemVolume = 1.0
+  if (project.edit.systemMuted === undefined) project.edit.systemMuted = false
   if (project.edit.audioOffsetMs === undefined) project.edit.audioOffsetMs = 0
   if (project.recordings && project.recordings.mic === undefined) project.recordings.mic = null
+  if (project.recordings && project.recordings.system === undefined) project.recordings.system = null
+  // Pre-master/proxy-split projects: the single screen.webm was already
+  // re-encoded for seekability, so it serves as both master and proxy.
+  if (project.recordings && project.recordings.screenProxy === undefined) {
+    project.recordings.screenProxy = project.recordings.screen
+  }
+  if (project.recordings && project.recordings.webcamProxy === undefined) {
+    project.recordings.webcamProxy = project.recordings.webcam
+  }
 
   return project
 }
@@ -160,39 +176,43 @@ export async function deleteProject(id) {
 
 export async function saveRawRecording(projectId, type, buffer) {
   const projectPath = getProjectPath(projectId)
-  const rawPath = join(projectPath, `${type}.raw.webm`)
-
-  // Write the raw browser-recorded blob to a temp filename.
-  await writeFile(rawPath, Buffer.from(buffer))
 
   let filename
+  let proxyFilename = null
+
   if (type === 'screen' || type === 'webcam') {
-    // Re-encode to a SEEKABLE WebM (VP8 + frequent keyframes). MP4/H.264
-    // hits Chromium's VideoToolbox decoder bugs (-12909) on macOS — VP8
-    // in WebM uses the software decoder and works reliably.
-    filename = `${type}.webm`
-    const finalPath = join(projectPath, filename)
+    // The raw MediaRecorder blob IS the master — full original quality. It
+    // must never be re-encoded; export always reads from it. The browser
+    // can't seek it reliably (no Cues block), so we generate a separate
+    // SEEKABLE proxy (VP8 + frequent keyframes) purely for editor playback.
+    // VP8 in WebM uses Chromium's software decoder, sidestepping the macOS
+    // VideoToolbox bugs (-12909) that H.264 triggers.
+    filename = `${type}-master.webm`
+    const masterPath = join(projectPath, filename)
+    await writeFile(masterPath, Buffer.from(buffer))
+
+    proxyFilename = `${type}.webm`
+    const proxyPath = join(projectPath, proxyFilename)
     try {
       const { remuxWebm } = await import('./ffmpeg.js')
-      await remuxWebm(rawPath, finalPath)
-      const { unlink } = await import('fs/promises')
-      await unlink(rawPath).catch(() => {})
+      await remuxWebm(masterPath, proxyPath)
     } catch (err) {
-      console.warn(`Transcode failed for ${type}, keeping raw webm:`, err.message)
-      const { rename } = await import('fs/promises')
-      await rename(rawPath, finalPath).catch(() => {})
+      console.warn(`Proxy generation failed for ${type}, editor will use the master (seeking may be unreliable):`, err.message)
+      proxyFilename = filename
     }
   } else {
-    // Audio-only outputs (mic.webm) stay as WebM — playback as an <audio>
-    // element doesn't have the same seek issues.
+    // Audio-only outputs (mic.webm, system.webm) stay as-is — playback as
+    // an <audio> element doesn't have the same seek issues.
     filename = `${type}.webm`
-    const { rename } = await import('fs/promises')
-    await rename(rawPath, join(projectPath, filename))
+    await writeFile(join(projectPath, filename), Buffer.from(buffer))
   }
 
   // Update project.json
   const project = await loadProject(projectId)
   project.recordings[type] = filename
+  if (proxyFilename) {
+    project.recordings[`${type}Proxy`] = proxyFilename
+  }
   await saveProject(projectId, project)
   return filename
 }

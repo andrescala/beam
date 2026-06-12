@@ -5,14 +5,17 @@ export default function useRecorder() {
   const [elapsed, setElapsed] = useState(0)
   const [selectedSource, setSelectedSource] = useState(null)
   const [webcamEnabled, setWebcamEnabledState] = useState(false)
+  const [systemAudioEnabled, setSystemAudioEnabledState] = useState(false)
   const [webcamStream, setWebcamStream] = useState(null)
 
   const screenRecorderRef = useRef(null)
   const webcamRecorderRef = useRef(null)
   const micRecorderRef = useRef(null)
+  const systemRecorderRef = useRef(null)
   const screenChunksRef = useRef([])
   const webcamChunksRef = useRef([])
   const micChunksRef = useRef([])
+  const systemChunksRef = useRef([])
   const timerRef = useRef(null)
   const startTimeRef = useRef(0)
   const elapsedBeforePauseRef = useRef(0)
@@ -23,10 +26,11 @@ export default function useRecorder() {
   // Track elapsed in a ref so the onstop closure always has the latest value
   const elapsedRef = useRef(0)
 
-  // Load webcam preference on mount
+  // Load recording preferences on mount
   useEffect(() => {
     window.electronAPI.getPreferences().then((prefs) => {
       setWebcamEnabledState(prefs.webcamEnabled ?? false)
+      setSystemAudioEnabledState(prefs.systemAudioEnabled ?? false)
     }).catch(() => {})
     return () => cleanup()
   }, [])
@@ -35,6 +39,12 @@ export default function useRecorder() {
   function setWebcamEnabled(enabled) {
     setWebcamEnabledState(enabled)
     window.electronAPI.setPreferences({ webcamEnabled: enabled }).catch(() => {})
+  }
+
+  // Persist system-audio toggle to preferences
+  function setSystemAudioEnabled(enabled) {
+    setSystemAudioEnabledState(enabled)
+    window.electronAPI.setPreferences({ systemAudioEnabled: enabled }).catch(() => {})
   }
 
   function cleanup() {
@@ -71,10 +81,32 @@ export default function useRecorder() {
 
       await window.electronAPI.setCaptureSource(selectedSource.id)
 
-      const screenStream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
-        audio: false
-      })
+      // Preferred input devices (set in the source picker)
+      let prefs = {}
+      try {
+        prefs = await window.electronAPI.getPreferences()
+      } catch {
+        // fall back to defaults
+      }
+
+      // System audio comes back as an audio track on the display-media
+      // stream (Electron loopback). It is recorded as its own file, never
+      // mixed into the screen recorder. Platforms without loopback support
+      // simply return no audio track — recording proceeds without it.
+      let screenStream
+      try {
+        screenStream = await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+          audio: systemAudioEnabled
+        })
+      } catch (err) {
+        if (!systemAudioEnabled) throw err
+        console.warn('Display capture with system audio failed, retrying video-only:', err)
+        screenStream = await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+          audio: false
+        })
+      }
       screenStreamRef.current = screenStream
 
       // CRITICAL for sync: disable Chrome's default audio processing
@@ -84,6 +116,7 @@ export default function useRecorder() {
       try {
         micStream = await navigator.mediaDevices.getUserMedia({
           audio: {
+            ...(prefs.micDeviceId ? { deviceId: { ideal: prefs.micDeviceId } } : {}),
             echoCancellation: false,
             noiseSuppression: false,
             autoGainControl: false,
@@ -101,7 +134,11 @@ export default function useRecorder() {
       if (webcamEnabled) {
         try {
           wcStream = await navigator.mediaDevices.getUserMedia({
-            video: { width: 640, height: 480 }
+            video: {
+              ...(prefs.cameraDeviceId ? { deviceId: { ideal: prefs.cameraDeviceId } } : {}),
+              width: { ideal: 1920 },
+              height: { ideal: 1080 }
+            }
           })
           webcamStreamRef.current = wcStream
           setWebcamStream(wcStream)
@@ -139,6 +176,21 @@ export default function useRecorder() {
         micRecorderRef.current = micRecorder
       }
 
+      // System audio (loopback) — recorded as its own track so volume is
+      // independently controllable in the editor.
+      const systemAudioTracks = screenStream.getAudioTracks()
+      if (systemAudioEnabled && systemAudioTracks.length > 0) {
+        systemChunksRef.current = []
+        const systemStream = new MediaStream(systemAudioTracks)
+        const systemRecorder = new MediaRecorder(systemStream, { mimeType: audioMime })
+        systemRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) systemChunksRef.current.push(e.data)
+        }
+        systemRecorderRef.current = systemRecorder
+      } else if (systemAudioEnabled) {
+        console.warn('System audio requested but no loopback track available on this platform')
+      }
+
       if (wcStream) {
         webcamChunksRef.current = []
         const wcRecorder = new MediaRecorder(wcStream, { mimeType: videoMime })
@@ -166,6 +218,7 @@ export default function useRecorder() {
     try {
       if (screenRecorderRef.current) screenRecorderRef.current.start(1000)
       if (micRecorderRef.current) micRecorderRef.current.start(1000)
+      if (systemRecorderRef.current) systemRecorderRef.current.start(1000)
       if (webcamRecorderRef.current) webcamRecorderRef.current.start(1000)
 
       // Timer
@@ -197,6 +250,9 @@ export default function useRecorder() {
     if (micRecorderRef.current?.state === 'recording') {
       micRecorderRef.current.pause()
     }
+    if (systemRecorderRef.current?.state === 'recording') {
+      systemRecorderRef.current.pause()
+    }
     elapsedBeforePauseRef.current += (Date.now() - startTimeRef.current) / 1000
     clearInterval(timerRef.current)
     setState('paused')
@@ -211,6 +267,9 @@ export default function useRecorder() {
     }
     if (micRecorderRef.current?.state === 'paused') {
       micRecorderRef.current.resume()
+    }
+    if (systemRecorderRef.current?.state === 'paused') {
+      systemRecorderRef.current.resume()
     }
     startTimeRef.current = Date.now()
     timerRef.current = setInterval(() => {
@@ -264,6 +323,19 @@ export default function useRecorder() {
       recorder.stop()
     })
 
+    // Collect system-audio chunks the same way
+    const systemBlobPromise = new Promise((resolve) => {
+      const recorder = systemRecorderRef.current
+      if (!recorder || recorder.state === 'inactive') {
+        resolve(null)
+        return
+      }
+      recorder.onstop = () => {
+        resolve(new Blob(systemChunksRef.current, { type: 'audio/webm' }))
+      }
+      recorder.stop()
+    })
+
     // Stop all media tracks (after calling .stop() on recorders)
     if (screenStreamRef.current) {
       screenStreamRef.current.getTracks().forEach((t) => t.stop())
@@ -277,10 +349,11 @@ export default function useRecorder() {
 
     // Wait for blobs, then save them
     try {
-      const [screenBlob, webcamBlob, micBlob] = await Promise.all([
+      const [screenBlob, webcamBlob, micBlob, systemBlob] = await Promise.all([
         screenBlobPromise,
         webcamBlobPromise,
-        micBlobPromise
+        micBlobPromise,
+        systemBlobPromise
       ])
 
       const projectId = projectIdRef.current
@@ -307,6 +380,13 @@ export default function useRecorder() {
         const buffer = await micBlob.arrayBuffer()
         await window.electronAPI.saveRawRecording(projectId, 'mic', buffer)
         console.log(`Mic recording saved: ${(micBlob.size / 1024 / 1024).toFixed(1)} MB`)
+      }
+
+      // Save system-audio recording (separate track, like mic)
+      if (systemBlob && systemBlob.size > 0) {
+        const buffer = await systemBlob.arrayBuffer()
+        await window.electronAPI.saveRawRecording(projectId, 'system', buffer)
+        console.log(`System audio saved: ${(systemBlob.size / 1024 / 1024).toFixed(1)} MB`)
       }
 
       // Update project with duration
@@ -339,9 +419,11 @@ export default function useRecorder() {
     elapsed,
     selectedSource,
     webcamEnabled,
+    systemAudioEnabled,
     webcamStream,
     selectSource,
     setWebcamEnabled,
+    setSystemAudioEnabled,
     startCountdown,
     startRecording,
     pauseRecording,

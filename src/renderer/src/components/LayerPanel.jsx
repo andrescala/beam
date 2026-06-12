@@ -398,6 +398,47 @@ function LayerPanel({ project, projectId, currentTime, onEditChange }) {
         </div>
       )}
 
+      {/* System audio */}
+      {project.recordings?.system && (
+        <div className={styles.section}>
+          <div className={styles.sectionHeader} onClick={() => toggleSection('system')} role="button" tabIndex={0}>
+            <span>{expandedSection === 'system' ? '▼' : '▶'} System audio</span>
+            <span className={styles.propValue} style={{ marginRight: 8 }}>
+              {edit.systemMuted ? 'Muted' : `${Math.round((edit.systemVolume ?? 1.0) * 100)}%`}
+            </span>
+          </div>
+          {expandedSection === 'system' && (
+            <div className={styles.sectionBody}>
+              <div className={styles.layerCard}>
+                <div className={styles.layerProps}>
+                  <div className={styles.propRow}>
+                    <label>Volume</label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="200"
+                      className={styles.slider}
+                      value={Math.round((edit.systemVolume ?? 1.0) * 100)}
+                      onChange={(e) => onEditChange({ systemVolume: parseInt(e.target.value) / 100 })}
+                      disabled={edit.systemMuted}
+                    />
+                    <span className={styles.propValue}>{Math.round((edit.systemVolume ?? 1.0) * 100)}%</span>
+                  </div>
+                  <div className={styles.propRow}>
+                    <label>Mute</label>
+                    <input
+                      type="checkbox"
+                      checked={!!edit.systemMuted}
+                      onChange={(e) => onEditChange({ systemMuted: e.target.checked })}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Audio Layers */}
       <div className={styles.section}>
         <div className={styles.sectionHeader} onClick={() => toggleSection('audio')} role="button" tabIndex={0}>

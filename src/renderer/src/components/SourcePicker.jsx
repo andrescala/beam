@@ -1,11 +1,15 @@
 import { useState, useEffect, useRef } from 'react'
 import styles from './SourcePicker.module.css'
 
-function SourcePicker({ onSelect, onCancel, webcamEnabled, onWebcamToggle, onStart, selectedSource }) {
+function SourcePicker({ onSelect, onCancel, webcamEnabled, onWebcamToggle, systemAudioEnabled, onSystemAudioToggle, onStart, selectedSource }) {
   const [sources, setSources] = useState([])
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState('screen')
   const [permissions, setPermissions] = useState(null)
+  const [mics, setMics] = useState([])
+  const [cameras, setCameras] = useState([])
+  const [micDeviceId, setMicDeviceId] = useState('')
+  const [cameraDeviceId, setCameraDeviceId] = useState('')
   const webcamRef = useRef(null)
   const webcamStreamRef = useRef(null)
 
@@ -24,7 +28,7 @@ function SourcePicker({ onSelect, onCancel, webcamEnabled, onWebcamToggle, onSta
     } else {
       stopWebcamPreview()
     }
-  }, [webcamEnabled])
+  }, [webcamEnabled, cameraDeviceId])
 
   async function checkPermissionsAndLoadSources() {
     try {
@@ -33,6 +37,8 @@ function SourcePicker({ onSelect, onCancel, webcamEnabled, onWebcamToggle, onSta
 
       const srcs = await window.electronAPI.getSources()
       setSources(srcs)
+
+      await loadDevices()
     } catch (err) {
       console.error('Failed to load sources:', err)
     } finally {
@@ -40,9 +46,42 @@ function SourcePicker({ onSelect, onCancel, webcamEnabled, onWebcamToggle, onSta
     }
   }
 
-  async function startWebcamPreview() {
+  async function loadDevices() {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true })
+      const prefs = await window.electronAPI.getPreferences()
+      const devices = await navigator.mediaDevices.enumerateDevices()
+      const audioInputs = devices.filter((d) => d.kind === 'audioinput' && d.deviceId !== 'default' && d.deviceId !== 'communications')
+      const videoInputs = devices.filter((d) => d.kind === 'videoinput')
+      setMics(audioInputs)
+      setCameras(videoInputs)
+      // Only restore a saved device if it's still connected
+      if (prefs.micDeviceId && audioInputs.some((d) => d.deviceId === prefs.micDeviceId)) {
+        setMicDeviceId(prefs.micDeviceId)
+      }
+      if (prefs.cameraDeviceId && videoInputs.some((d) => d.deviceId === prefs.cameraDeviceId)) {
+        setCameraDeviceId(prefs.cameraDeviceId)
+      }
+    } catch (err) {
+      console.warn('Device enumeration failed:', err)
+    }
+  }
+
+  function handleMicChange(deviceId) {
+    setMicDeviceId(deviceId)
+    window.electronAPI.setPreferences({ micDeviceId: deviceId }).catch(() => {})
+  }
+
+  function handleCameraChange(deviceId) {
+    setCameraDeviceId(deviceId)
+    window.electronAPI.setPreferences({ cameraDeviceId: deviceId }).catch(() => {})
+  }
+
+  async function startWebcamPreview() {
+    stopWebcamPreview()
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: cameraDeviceId ? { deviceId: { ideal: cameraDeviceId } } : true
+      })
       webcamStreamRef.current = stream
       if (webcamRef.current) {
         webcamRef.current.srcObject = stream
@@ -165,11 +204,55 @@ function SourcePicker({ onSelect, onCancel, webcamEnabled, onWebcamToggle, onSta
           <label className={styles.toggleLabel}>
             <input
               type="checkbox"
+              checked={systemAudioEnabled}
+              onChange={(e) => onSystemAudioToggle(e.target.checked)}
+            />
+            <span>System audio</span>
+          </label>
+
+          {mics.length > 0 && (
+            <div className={styles.deviceRow}>
+              <span className={styles.deviceLabel}>Microphone</span>
+              <select
+                className={styles.deviceSelect}
+                value={micDeviceId}
+                onChange={(e) => handleMicChange(e.target.value)}
+              >
+                <option value="">System default</option>
+                {mics.map((d) => (
+                  <option key={d.deviceId} value={d.deviceId}>
+                    {d.label || 'Microphone'}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          <label className={styles.toggleLabel}>
+            <input
+              type="checkbox"
               checked={webcamEnabled}
               onChange={(e) => onWebcamToggle(e.target.checked)}
             />
             <span>Webcam overlay</span>
           </label>
+          {webcamEnabled && cameras.length > 1 && (
+            <div className={styles.deviceRow}>
+              <span className={styles.deviceLabel}>Camera</span>
+              <select
+                className={styles.deviceSelect}
+                value={cameraDeviceId}
+                onChange={(e) => handleCameraChange(e.target.value)}
+              >
+                <option value="">System default</option>
+                {cameras.map((d) => (
+                  <option key={d.deviceId} value={d.deviceId}>
+                    {d.label || 'Camera'}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           {webcamEnabled && (
             <div className={styles.webcamPreview}>
               <video ref={webcamRef} autoPlay muted playsInline className={styles.webcamVideo} />

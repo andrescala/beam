@@ -151,11 +151,19 @@ export function remuxWebm(inputPath, outputPath) {
   })
 }
 
-export async function exportMp4(projectPath, project, onProgress) {
+const CRF_BY_QUALITY = { high: 18, balanced: 23, small: 28 }
+
+export async function exportMp4(projectPath, project, onProgress, options = {}) {
   const screenPath = join(projectPath, project.recordings.screen)
   if (!existsSync(screenPath)) {
     throw new Error('Screen recording not found')
   }
+
+  const crf = CRF_BY_QUALITY[options.quality] || CRF_BY_QUALITY.balanced
+  const targetHeight = options.resolution === '1080p' ? 1080
+    : options.resolution === '720p' ? 720
+    : null
+  const normalizeLoudness = !!options.normalizeLoudness
 
   const screenInfo = await probeVideo(screenPath)
 
@@ -196,6 +204,13 @@ export async function exportMp4(projectPath, project, onProgress) {
   const audioOffsetMs = edit.audioOffsetMs || 0
   const audioOffsetSec = audioOffsetMs / 1000
 
+  // Optional system-audio track (separate system.webm recording)
+  const systemPath = project.recordings?.system
+    ? join(projectPath, project.recordings.system)
+    : null
+  const hasSystemFile = systemPath && existsSync(systemPath)
+  const systemVolume = edit.systemMuted ? 0 : (edit.systemVolume != null ? edit.systemVolume : 1.0)
+
   const keepSegments = computeKeepSegments(trimStart, trimEnd, cuts)
   if (keepSegments.length === 0) {
     throw new Error('Nothing to export — all content has been cut')
@@ -230,29 +245,37 @@ export async function exportMp4(projectPath, project, onProgress) {
     command = command.input(screenPath)
     let nextInputIdx = 1
 
-    // Audio input — prefer mic.webm with optional sync offset; fall back to
-    // the screen file's audio for legacy recordings without mic.webm.
-    let audioInputLabel
+    // Recording-audio sources. Each is trimmed/speed-adjusted independently,
+    // volume-scaled, then mixed. Mic comes from mic.webm with optional sync
+    // offset (falling back to audio muxed into the screen file for legacy
+    // recordings); system audio is its own optional track. Muted/zero-volume
+    // sources are dropped entirely.
+    const recordingAudio = [] // { label, volume }
     if (hasMicFile) {
-      if (audioOffsetSec !== 0) {
-        command = command.input(micPath).inputOptions(['-itsoffset', audioOffsetSec.toFixed(3)])
-      } else {
-        command = command.input(micPath)
+      if (micVolume > 0) {
+        if (audioOffsetSec !== 0) {
+          command = command.input(micPath).inputOptions(['-itsoffset', audioOffsetSec.toFixed(3)])
+        } else {
+          command = command.input(micPath)
+        }
+        recordingAudio.push({ label: `[${nextInputIdx}:a]`, volume: micVolume })
+        nextInputIdx++
       }
-      audioInputLabel = `[${nextInputIdx}:a]`
-      nextInputIdx++
-    } else if (screenInfo.hasAudio) {
+    } else if (screenInfo.hasAudio && micVolume > 0) {
       // Legacy: audio is muxed into the screen file. Add it as a separate
       // input only if we need to apply an offset.
       if (audioOffsetSec !== 0) {
         command = command.input(screenPath).inputOptions(['-itsoffset', audioOffsetSec.toFixed(3)])
-        audioInputLabel = `[${nextInputIdx}:a]`
+        recordingAudio.push({ label: `[${nextInputIdx}:a]`, volume: micVolume })
         nextInputIdx++
       } else {
-        audioInputLabel = '[0:a]'
+        recordingAudio.push({ label: '[0:a]', volume: micVolume })
       }
-    } else {
-      audioInputLabel = null  // no audio anywhere
+    }
+    if (hasSystemFile && systemVolume > 0) {
+      command = command.input(systemPath)
+      recordingAudio.push({ label: `[${nextInputIdx}:a]`, volume: systemVolume })
+      nextInputIdx++
     }
 
     // Webcam input (if present)
@@ -287,41 +310,46 @@ export async function exportMp4(projectPath, project, onProgress) {
     // ── Step 1: Trim/cut screen video ──
     if (hasCuts) {
       const vParts = []
-      const aParts = []
-
       keepSegments.forEach((seg, i) => {
         filters.push(`[0:v]trim=start=${seg.start}:end=${seg.end},setpts=PTS-STARTPTS[sv${i}]`)
         vParts.push(`[sv${i}]`)
-
-        if (audioInputLabel) {
-          filters.push(`${audioInputLabel}atrim=start=${seg.start}:end=${seg.end},asetpts=PTS-STARTPTS[sa${i}]`)
-          aParts.push(`[sa${i}]`)
-        }
       })
 
       if (keepSegments.length > 1) {
         filters.push(`${vParts.join('')}concat=n=${keepSegments.length}:v=1:a=0[sv_concat]`)
         videoOut = 'sv_concat'
-        if (audioInputLabel) {
-          filters.push(`${aParts.join('')}concat=n=${keepSegments.length}:v=0:a=1[sa_concat]`)
-          audioOut = 'sa_concat'
-        }
       } else {
         videoOut = 'sv0'
-        if (audioInputLabel) audioOut = 'sa0'
       }
     } else {
       filters.push(`[0:v]trim=start=${trimStart}:end=${trimEnd},setpts=PTS-STARTPTS[sv_trim]`)
       videoOut = 'sv_trim'
-      if (audioInputLabel) {
-        filters.push(`${audioInputLabel}atrim=start=${trimStart}:end=${trimEnd},asetpts=PTS-STARTPTS[sa_trim]`)
-        audioOut = 'sa_trim'
-      }
     }
+
+    // ── Step 1b: Trim/cut each recording-audio source the same way ──
+    const recAudioOuts = []
+    recordingAudio.forEach((src, s) => {
+      if (hasCuts) {
+        const aParts = []
+        keepSegments.forEach((seg, i) => {
+          filters.push(`${src.label}atrim=start=${seg.start}:end=${seg.end},asetpts=PTS-STARTPTS[sa${s}_${i}]`)
+          aParts.push(`[sa${s}_${i}]`)
+        })
+        if (keepSegments.length > 1) {
+          filters.push(`${aParts.join('')}concat=n=${keepSegments.length}:v=0:a=1[sa${s}_concat]`)
+          recAudioOuts.push(`sa${s}_concat`)
+        } else {
+          recAudioOuts.push(`sa${s}_0`)
+        }
+      } else {
+        filters.push(`${src.label}atrim=start=${trimStart}:end=${trimEnd},asetpts=PTS-STARTPTS[sa${s}_trim]`)
+        recAudioOuts.push(`sa${s}_trim`)
+      }
+    })
 
     // If no audio source at all, generate a silent track so the output MP4
     // is well-formed.
-    if (!audioInputLabel) {
+    if (recordingAudio.length === 0) {
       const silenceDuration = computeOutputDuration(keepSegments)
       filters.push(`aevalsrc=0:d=${silenceDuration}[sa_silence]`)
       audioOut = 'sa_silence'
@@ -332,8 +360,28 @@ export async function exportMp4(projectPath, project, onProgress) {
       filters.push(`[${videoOut}]setpts=PTS/${speed}[sv_speed]`)
       videoOut = 'sv_speed'
       const tempoFilters = buildTempoChain(speed)
-      filters.push(`[${audioOut}]${tempoFilters}[sa_speed]`)
-      audioOut = 'sa_speed'
+      recAudioOuts.forEach((label, s) => {
+        filters.push(`[${label}]${tempoFilters}[sa${s}_speed]`)
+        recAudioOuts[s] = `sa${s}_speed`
+      })
+      if (recordingAudio.length === 0) {
+        filters.push(`[${audioOut}]${tempoFilters}[sa_speed]`)
+        audioOut = 'sa_speed'
+      }
+    }
+
+    // ── Step 2b: Per-source volume, then mix recording-audio sources ──
+    recAudioOuts.forEach((label, s) => {
+      if (recordingAudio[s].volume !== 1.0) {
+        filters.push(`[${label}]volume=${recordingAudio[s].volume}[sa${s}_vol]`)
+        recAudioOuts[s] = `sa${s}_vol`
+      }
+    })
+    if (recAudioOuts.length === 1) {
+      audioOut = recAudioOuts[0]
+    } else if (recAudioOuts.length > 1) {
+      filters.push(`${recAudioOuts.map((l) => `[${l}]`).join('')}amix=inputs=${recAudioOuts.length}:duration=first:normalize=0[sa_recmix]`)
+      audioOut = 'sa_recmix'
     }
 
     // ── Step 3: Crop ──
@@ -525,12 +573,8 @@ export async function exportMp4(projectPath, project, onProgress) {
     }
 
     // ── Step 7: Audio mixing ──
-    // Apply recording-audio volume (covers mute too) before mixing in any added audio layers.
-    if (audioInputLabel && micVolume !== 1.0) {
-      filters.push(`[${audioOut}]volume=${micVolume}[mic_vol]`)
-      audioOut = 'mic_vol'
-    }
-
+    // Recording-audio volumes were applied in Step 2b; here we mix in any
+    // imported audio layers (music, SFX).
     if (audioAssetInputs.length > 0) {
       // Mix imported audio layers with recording audio
       const audioLabels = [`[${audioOut}]`]
@@ -545,15 +589,25 @@ export async function exportMp4(projectPath, project, onProgress) {
         audioLabels.push(`[${label}]`)
       }
 
-      filters.push(`${audioLabels.join('')}amix=inputs=${audioLabels.length}:duration=first:dropout_transition=2[amixed]`)
+      filters.push(`${audioLabels.join('')}amix=inputs=${audioLabels.length}:duration=first:dropout_transition=2:normalize=0[amixed]`)
       audioOut = 'amixed'
     }
 
+    // ── Step 7b: Output scaling (resolution presets) ──
+    const refWidth2 = hasCrop ? Math.round(screenInfo.width * crop.width) : screenInfo.width
+    const refHeight2 = hasCrop ? Math.round(screenInfo.height * crop.height) : screenInfo.height
+    let fw = refWidth2 % 2 === 0 ? refWidth2 : refWidth2 - 1
+    let fh = refHeight2 % 2 === 0 ? refHeight2 : refHeight2 - 1
+
+    if (targetHeight && targetHeight < fh) {
+      const scaledW = Math.round(fw * (targetHeight / fh))
+      fw = scaledW % 2 === 0 ? scaledW : scaledW - 1
+      fh = targetHeight % 2 === 0 ? targetHeight : targetHeight - 1
+      filters.push(`[${videoOut}]scale=${fw}:${fh}:flags=lanczos[v_resized]`)
+      videoOut = 'v_resized'
+    }
+
     // ── Step 8: Intro/outro title cards ──
-    const finalWidth = hasCrop ? Math.round(screenInfo.width * crop.width) : screenInfo.width
-    const finalHeight = hasCrop ? Math.round(screenInfo.height * crop.height) : screenInfo.height
-    const fw = finalWidth % 2 === 0 ? finalWidth : finalWidth - 1
-    const fh = finalHeight % 2 === 0 ? finalHeight : finalHeight - 1
 
     if (introCard || outroCard) {
       // Ensure main content dimensions match title cards for concat
@@ -630,13 +684,19 @@ export async function exportMp4(projectPath, project, onProgress) {
       audioOut = 'a_final'
     }
 
+    // ── Step 9: Loudness normalization (social/YouTube target) ──
+    if (normalizeLoudness) {
+      filters.push(`[${audioOut}]loudnorm=I=-14:TP=-1.5:LRA=11[a_norm]`)
+      audioOut = 'a_norm'
+    }
+
     command = command.complexFilter(filters.join(';'))
     command = command.outputOptions([
       `-map [${videoOut}]`,
       `-map [${audioOut}]`,
       '-c:v libx264',
       '-preset medium',
-      '-crf 23',
+      `-crf ${crf}`,
       '-c:a aac',
       '-b:a 128k',
       '-movflags +faststart',

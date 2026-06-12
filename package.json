@@ -63,7 +63,8 @@
       "node_modules/ffmpeg-static/**"
     ],
     "files": [
-      "out/**/*"
+      "out/**/*",
+      "resources/**"
     ],
     "directories": {
       "output": "dist"
