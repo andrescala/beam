@@ -285,7 +285,8 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
     // offset (falling back to audio muxed into the screen file for legacy
     // recordings); system audio is its own optional track. Muted/zero-volume
     // sources are dropped entirely.
-    const recordingAudio = [] // { label, volume }
+    const micDenoise = !!edit.micDenoise
+    const recordingAudio = [] // { label, volume, denoise }
     if (hasMicFile) {
       if (micVolume > 0) {
         if (audioOffsetSec !== 0) {
@@ -293,7 +294,7 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
         } else {
           command = command.input(micPath)
         }
-        recordingAudio.push({ label: `[${nextInputIdx}:a]`, volume: micVolume })
+        recordingAudio.push({ label: `[${nextInputIdx}:a]`, volume: micVolume, denoise: micDenoise })
         nextInputIdx++
       }
     } else if (screenInfo.hasAudio && micVolume > 0) {
@@ -301,15 +302,15 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
       // input only if we need to apply an offset.
       if (audioOffsetSec !== 0) {
         command = command.input(screenPath).inputOptions(['-itsoffset', audioOffsetSec.toFixed(3)])
-        recordingAudio.push({ label: `[${nextInputIdx}:a]`, volume: micVolume })
+        recordingAudio.push({ label: `[${nextInputIdx}:a]`, volume: micVolume, denoise: micDenoise })
         nextInputIdx++
       } else {
-        recordingAudio.push({ label: '[0:a]', volume: micVolume })
+        recordingAudio.push({ label: '[0:a]', volume: micVolume, denoise: micDenoise })
       }
     }
     if (hasSystemFile && systemVolume > 0) {
       command = command.input(systemPath)
-      recordingAudio.push({ label: `[${nextInputIdx}:a]`, volume: systemVolume })
+      recordingAudio.push({ label: `[${nextInputIdx}:a]`, volume: systemVolume, denoise: false })
       nextInputIdx++
     }
 
@@ -364,10 +365,13 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
     // ── Step 1b: Trim/cut each recording-audio source the same way ──
     const recAudioOuts = []
     recordingAudio.forEach((src, s) => {
+      // FFT-based background-noise reduction on the mic, applied at the
+      // source so it precedes trimming/speed/volume.
+      const pre = src.denoise ? 'afftdn=nf=-25,' : ''
       if (hasCuts) {
         const aParts = []
         keepSegments.forEach((seg, i) => {
-          filters.push(`${src.label}atrim=start=${seg.start}:end=${seg.end},asetpts=PTS-STARTPTS[sa${s}_${i}]`)
+          filters.push(`${src.label}${pre}atrim=start=${seg.start}:end=${seg.end},asetpts=PTS-STARTPTS[sa${s}_${i}]`)
           aParts.push(`[sa${s}_${i}]`)
         })
         if (keepSegments.length > 1) {
@@ -377,7 +381,7 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
           recAudioOuts.push(`sa${s}_0`)
         }
       } else {
-        filters.push(`${src.label}atrim=start=${trimStart}:end=${trimEnd},asetpts=PTS-STARTPTS[sa${s}_trim]`)
+        filters.push(`${src.label}${pre}atrim=start=${trimStart}:end=${trimEnd},asetpts=PTS-STARTPTS[sa${s}_trim]`)
         recAudioOuts.push(`sa${s}_trim`)
       }
     })
@@ -615,8 +619,24 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
     // Recording-audio volumes were applied in Step 2b; here we mix in any
     // imported audio layers (music, SFX).
     if (audioAssetInputs.length > 0) {
+      // Auto-ducking: layers marked duckUnderVoice are sidechain-compressed
+      // against the recording audio (the "voice"), so music drops whenever
+      // someone speaks. Each ducked layer needs its own copy of the voice
+      // track as a compressor key.
+      const hasVoice = recordingAudio.length > 0
+      const duckedCount = hasVoice
+        ? audioAssetInputs.filter(({ layer }) => layer.duckUnderVoice).length
+        : 0
+      if (duckedCount > 0) {
+        const splitOuts = ['[a_voice_main]']
+        for (let k = 0; k < duckedCount; k++) splitOuts.push(`[a_key${k}]`)
+        filters.push(`[${audioOut}]asplit=${duckedCount + 1}${splitOuts.join('')}`)
+        audioOut = 'a_voice_main'
+      }
+
       // Mix imported audio layers with recording audio
       const audioLabels = [`[${audioOut}]`]
+      let keyIdx = 0
       for (let i = 0; i < audioAssetInputs.length; i++) {
         const { layer, assetDuration } = audioAssetInputs[i]
         const inputIdx = audioInputMap[i]
@@ -635,8 +655,14 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
         }
         chain += `,adelay=${delay}|${delay}`
 
-        const label = `aud${i}`
+        let label = `aud${i}`
         filters.push(`[${inputIdx}:a]${chain}[${label}]`)
+
+        if (layer.duckUnderVoice && duckedCount > 0) {
+          filters.push(`[${label}][a_key${keyIdx}]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=500[${label}_ducked]`)
+          label = `${label}_ducked`
+          keyIdx++
+        }
         audioLabels.push(`[${label}]`)
       }
 

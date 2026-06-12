@@ -52,6 +52,7 @@ export async function createProject(name) {
       speed: 1.0,
       micVolume: 1.0,
       micMuted: false,
+      micDenoise: false,
       systemVolume: 1.0,
       systemMuted: false,
       audioOffsetMs: 0,
@@ -113,6 +114,7 @@ export async function loadProject(id) {
   if (project.edit.zoomKeyframes === undefined) project.edit.zoomKeyframes = []
   if (project.edit.micVolume === undefined) project.edit.micVolume = 1.0
   if (project.edit.micMuted === undefined) project.edit.micMuted = false
+  if (project.edit.micDenoise === undefined) project.edit.micDenoise = false
   if (project.edit.systemVolume === undefined) project.edit.systemVolume = 1.0
   if (project.edit.systemMuted === undefined) project.edit.systemMuted = false
   if (project.edit.audioOffsetMs === undefined) project.edit.audioOffsetMs = 0

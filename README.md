@@ -25,7 +25,8 @@ Built as a free alternative to Loom.
 - **Spatial crop** — aspect ratio presets (16:9, 9:16, 4:3, 1:1) with live preview overlay
 - **Text layers** — add titles and annotations with font size, color, position, and timing
 - **Image layers** — import logos, arrows, or watermarks with position, size, and timing
-- **Audio layers** — import background music or SFX with volume control, start time, and fade in/out
+- **Audio layers** — import background music or SFX with volume control, start time, fade in/out, and auto-ducking (music lowers automatically under speech)
+- **Noise reduction** — one-click background-noise removal on the mic track (FFT denoise at export)
 - **Captions** — caption editor with timing, Whisper auto-transcription, and SRT export. The speech model stays out of the app bundle: a status chip shows installed / not installed / downloading (with live progress), is clickable to trigger or retry, and the model downloads automatically the first time transcription needs it
 - **Webcam controls** — adjust position (corners), size (10-50%), and shape (circle/rectangle)
 - **Undo / redo** — full edit history (Cmd/Ctrl+Z, Cmd/Ctrl+Shift+Z) with toolbar buttons
@@ -292,7 +293,7 @@ Screenshots from `test:screenshots` are saved to `e2e/screenshots/` for visual r
 - [x] Bundled ffprobe (probing no longer depends on a system install)
 - [x] External video import — Phase B start ("edit videos not recorded here")
 - [x] Social export renditions with batch queue (YouTube / 9:16 / 1:1 / 720p; blur-fill or crop reframing)
-- [x] Audio layer fade in/out
+- [x] Audio layer fade in/out, auto-ducking under voice, mic noise reduction
 - [ ] Hardware-accelerated export encoding
 
 See [docs/SPEC.md](docs/SPEC.md) for the full product spec and [docs/GAP_ANALYSIS.md](docs/GAP_ANALYSIS.md) for the prioritized roadmap (external video import, multi-track timeline, social export presets, AI copilot).

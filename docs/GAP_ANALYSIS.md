@@ -128,7 +128,7 @@ The four 🔴 foundation items that everything else builds on, plus cheap wins:
 ### P2 — Publish everywhere (Phase C) → the social-media ask
 10. ✅ **X1** Platform presets + resizing/padding — rendition multi-select in the export modal (Original, YouTube 1080p, TikTok/Reels/Shorts 9:16, Square 1:1, X/LinkedIn 720p) with blur-fill or crop-to-fill reframing, labeled output files.
 11. ✅ **X2** Batch render queue — selected renditions render sequentially with per-rendition progress, partial-failure reporting, and retry.
-12. ✅ **A1-partial** Audio layer fade in/out (trim/loop still open).
+12. ✅ **A1-partial** Audio layer fade in/out (trim/loop still open) · ✅ **A2** auto-ducking (sidechain compression under recording audio) · ✅ **A3** mic noise reduction (`afftdn`).
 13. C4 caption styles, X6 keyframed reframe, L3 webcam-as-layer.
 
 ### P3 — AI differentiation (Phase D)

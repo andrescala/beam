@@ -362,6 +362,15 @@ function LayerPanel({ project, projectId, currentTime, onEditChange }) {
                     />
                   </div>
                   <div className={styles.propRow}>
+                    <label>Reduce noise</label>
+                    <input
+                      type="checkbox"
+                      checked={!!edit.micDenoise}
+                      onChange={(e) => onEditChange({ micDenoise: e.target.checked })}
+                      title="Remove background noise (fans, hum) at export"
+                    />
+                  </div>
+                  <div className={styles.propRow}>
                     <label>Sync offset</label>
                     <input
                       type="range"
@@ -507,6 +516,15 @@ function LayerPanel({ project, projectId, currentTime, onEditChange }) {
                       title="Fade-out duration in seconds (applied at export)"
                     />
                     <span className={styles.propValue}>s</span>
+                  </div>
+                  <div className={styles.propRow}>
+                    <label>Duck under voice</label>
+                    <input
+                      type="checkbox"
+                      checked={!!layer.duckUnderVoice}
+                      onChange={(e) => updateAudioLayer(layer.id, { duckUnderVoice: e.target.checked })}
+                      title="Automatically lower this track while the recording audio has speech (applied at export)"
+                    />
                   </div>
                 </div>
               </div>
