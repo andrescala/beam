@@ -113,14 +113,14 @@ Effort: S (<1 wk) · M (1–3 wk) · L (>3 wk, may need native code).
 ### P0 — Trust & table stakes (Phase A)
 The four 🔴 foundation items that everything else builds on, plus cheap wins:
 
-1. **R2** Master/proxy split — stop destroying quality on save (prerequisite for credible 1080p+/60fps output).
-2. **R1** System audio capture (the handler already supports loopback; renderer work mostly).
-3. **E3** Undo/redo command stack (do *before* the timeline rewrite so all new features inherit it).
-4. **C1** Bundle whisper.cpp (turns "captions if you install Python tools" into a headline feature).
-5. Quick wins alongside: R3, R5, R6, E6, A4, X3, X5.
+1. ✅ **R2** Master/proxy split — stop destroying quality on save (prerequisite for credible 1080p+/60fps output).
+2. ✅ **R1** System audio capture (the handler already supports loopback; renderer work mostly).
+3. ✅ **E3** Undo/redo command stack (do *before* the timeline rewrite so all new features inherit it).
+4. ✅ **C1** *(amended per product decision: the model stays OUT of the bundle)* — Whisper model auto-downloads on first transcription, with a status chip (installed / downloading % / failed-retry / not-installed) that's clickable to trigger or retry. The engine (whisper-cpp or openai-whisper) remains a one-time user install.
+5. ✅ Quick wins: R3 (device pickers), R5 (1080p webcam), R6 (tray + hotkey), E6 (shortcuts), A4 (loudnorm), X3-partial (CRF quality + resolution scaling; hardware encoding still open). Bonus: bundled ffprobe (probing previously depended on a system install), fixed intro/outro concat stream ordering, fixed zoompan undoing speed changes.
 
 ### P1 — Become a real editor (Phase B) → unlocks "edit videos not recorded here"
-6. **E1** External video import.
+6. ✅ **E1** External video import — implemented as "Import Video" on Home: any MP4/MOV/WebM/MKV becomes a project (master kept untouched, seekable proxy with audio, thumbnail), so the full single-clip editor and export pipeline work on external footage. Multi-clip composition arrives with E2.
 7. **E2** Multi-track/multi-clip timeline (the largest single work item; design with E4's unified effect model).
 8. **E4** Unified preview/export compositor (kills X4 too).
 9. E5 waveforms, E7 transitions, A1–A3 audio basics, E9/L1/L2 overlay upgrades, L4 backgrounds.

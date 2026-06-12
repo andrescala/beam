@@ -15,10 +15,12 @@ import {
   listAssets,
   deleteAsset,
   exportSrt,
-  importProjectZip
+  importProjectZip,
+  importVideoAsProject
 } from './projects.js'
 import { generateThumbnail, exportMp4, exportGif, extractAudio, detectSilence } from './ffmpeg.js'
 import { transcribeAudio, isWhisperAvailable } from './transcribe.js'
+import { getWhisperStatus, downloadModel, ensureWhisperReady, onStatusChange } from './whisper-manager.js'
 import { getPreferences, setPreferences } from './preferences.js'
 
 // Force Chromium to use software H.264 decoding. macOS VideoToolbox
@@ -380,7 +382,19 @@ function registerIpcHandlers() {
     return { available: isWhisperAvailable() }
   })
 
-  // Transcribe the recording into caption segments
+  // Whisper engine/model status for the UI chip
+  ipcMain.handle('whisper-status', async () => {
+    return getWhisperStatus()
+  })
+
+  // Manually trigger (or retry) the model download
+  ipcMain.handle('whisper-download', async () => {
+    return await downloadModel()
+  })
+
+  // Transcribe the recording into caption segments. If the whisper.cpp
+  // model isn't downloaded yet, the download starts automatically and the
+  // chip shows its progress.
   ipcMain.handle('transcribe-recording', async (_event, projectId, opts) => {
     try {
       const project = await loadProject(projectId)
@@ -390,16 +404,51 @@ function registerIpcHandlers() {
       if (!audioFile) {
         return { error: 'No audio in this recording.' }
       }
+
+      const ready = await ensureWhisperReady()
+      if (!ready.ok) {
+        if (ready.status.status === 'not-installed') {
+          return {
+            error: 'Whisper is not installed. Run `brew install whisper-cpp` (or `pip install openai-whisper`) to enable captions — Beam downloads the model for you.',
+            code: 'WHISPER_NOT_FOUND'
+          }
+        }
+        return {
+          error: `Whisper model download failed: ${ready.status.error || 'unknown error'}. Click the Whisper chip to retry.`,
+          code: 'WHISPER_MODEL_MISSING'
+        }
+      }
+
       const audioPath = join(projectPath, audioFile)
-      const segments = await transcribeAudio(audioPath, opts || {})
+      const segments = await transcribeAudio(audioPath, { ...(opts || {}), modelPath: ready.modelPath })
       return { segments }
     } catch (err) {
       if (err.code === 'WHISPER_NOT_FOUND') {
         return {
-          error: 'Whisper is not installed. Run `brew install openai-whisper` (or `pip install openai-whisper`) to enable real captions.',
+          error: 'Whisper is not installed. Run `brew install whisper-cpp` (or `pip install openai-whisper`) to enable real captions.',
           code: 'WHISPER_NOT_FOUND'
         }
       }
+      return { error: err.message }
+    }
+  })
+
+  // Import an external video file as a new project
+  ipcMain.handle('import-video', async () => {
+    try {
+      const result = await dialog.showOpenDialog(mainWindow, {
+        properties: ['openFile'],
+        filters: [{ name: 'Video Files', extensions: ['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v'] }]
+      })
+      if (result.canceled || result.filePaths.length === 0) return null
+
+      const project = await importVideoAsProject(result.filePaths[0], (percent) => {
+        if (mainWindow) {
+          mainWindow.webContents.send('import-progress', percent)
+        }
+      })
+      return { project }
+    } catch (err) {
       return { error: err.message }
     }
   })
@@ -529,6 +578,13 @@ if (!gotTheLock) {
 
     await ensureProjectsDir()
     registerIpcHandlers()
+
+    // Forward whisper model-download status changes to the renderer chip
+    onStatusChange((status) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('whisper-status-changed', status)
+      }
+    })
 
     session.defaultSession.setDisplayMediaRequestHandler(async (_request, callback) => {
       try {

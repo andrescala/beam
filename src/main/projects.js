@@ -217,6 +217,59 @@ export async function saveRawRecording(projectId, type, buffer) {
   return filename
 }
 
+/**
+ * Create a project from an external video file (MP4, MOV, WebM, MKV, …).
+ * The original is copied in untouched as the master; a seekable editing
+ * proxy (with audio — imported masters carry their own soundtrack) and a
+ * thumbnail are generated. The whole existing editor then works on it.
+ */
+export async function importVideoAsProject(sourcePath, onProgress) {
+  const { probeVideo, remuxWebm, generateThumbnail } = await import('./ffmpeg.js')
+
+  const sourceName = basename(sourcePath)
+  const ext = sourceName.includes('.') ? sourceName.split('.').pop().toLowerCase() : 'mp4'
+  const displayName = sourceName.replace(/\.[^.]+$/, '')
+
+  const info = await probeVideo(sourcePath)
+  if (!info.duration) {
+    throw new Error('Could not read video duration — is this a valid video file?')
+  }
+
+  const project = await createProject(displayName)
+  const projectPath = getProjectPath(project.id)
+
+  const masterName = `screen-master.${ext}`
+  await copyFile(sourcePath, join(projectPath, masterName))
+
+  let proxyName = 'screen.webm'
+  try {
+    await remuxWebm(join(projectPath, masterName), join(projectPath, proxyName), {
+      keepAudio: info.hasAudio,
+      onProgress,
+      durationSec: info.duration
+    })
+  } catch (err) {
+    console.warn('Proxy generation failed for imported video, editor will use the master:', err.message)
+    proxyName = masterName
+  }
+
+  project.recordings.screen = masterName
+  project.recordings.screenProxy = proxyName
+  project.duration = info.duration
+  project.edit.trimEnd = info.duration
+  await saveProject(project.id, project)
+
+  try {
+    await generateThumbnail(join(projectPath, masterName), projectPath)
+    project.thumbnail = join(projectPath, 'thumb.jpg')
+    await saveProject(project.id, project)
+  } catch (err) {
+    console.warn('Thumbnail generation failed for imported video:', err.message)
+  }
+
+  return project
+}
+
 export async function listAssets(projectId) {
   const projectPath = getProjectPath(projectId)
   const assetsDir = join(projectPath, 'assets')

@@ -13,6 +13,7 @@ function Home() {
   const [loading, setLoading] = useState(true)
   const [helpOpen, setHelpOpen] = useState(false)
   const [showWelcome, setShowWelcome] = useState(false)
+  const [importingVideo, setImportingVideo] = useState(null) // null | progress %
 
   useEffect(() => {
     loadProjects()
@@ -22,6 +23,11 @@ function Home() {
         setShowWelcome(true)
       }
     }).catch(() => {})
+
+    const offProgress = window.electronAPI.onImportProgress?.((percent) => {
+      setImportingVideo((current) => (current === null ? current : percent))
+    })
+    return () => offProgress?.()
   }, [])
 
   async function loadProjects() {
@@ -58,6 +64,28 @@ function Home() {
     }
   }
 
+  async function handleImportVideo() {
+    try {
+      setImportingVideo(0)
+      const result = await window.electronAPI.importVideo()
+      if (!result) {
+        setImportingVideo(null)
+        return // dialog cancelled
+      }
+      if (result.error) {
+        setImportingVideo(null)
+        showToast('error', `Import failed: ${result.error}`)
+        return
+      }
+      setImportingVideo(null)
+      showToast('success', `Imported: ${result.project.name}`)
+      navigate(`/editor/${result.project.id}`)
+    } catch (err) {
+      setImportingVideo(null)
+      showToast('error', 'Failed to import video')
+    }
+  }
+
   async function handleImportProject() {
     try {
       const result = await window.electronAPI.importProjectZip()
@@ -86,6 +114,14 @@ function Home() {
           <button className={styles.importBtn} onClick={handleImportProject}>
             Import
           </button>
+          <button
+            className={styles.importBtn}
+            onClick={handleImportVideo}
+            disabled={importingVideo !== null}
+            title="Edit a video not recorded in Beam (MP4, MOV, WebM, MKV)"
+          >
+            {importingVideo !== null ? `Importing… ${importingVideo}%` : 'Import Video'}
+          </button>
           <button className={styles.newBtn} onClick={() => navigate('/recorder')}>
             New Recording
           </button>
@@ -98,8 +134,8 @@ function Home() {
         ) : projects.length === 0 ? (
           <div className={styles.empty}>
             <div className={styles.emptyIcon}>&#x2299;</div>
-            <p className={styles.emptyTitle}>No recordings yet</p>
-            <p className={styles.emptyDesc}>Click &quot;New Recording&quot; to capture your first demo.</p>
+            <p className={styles.emptyTitle}>No projects yet</p>
+            <p className={styles.emptyDesc}>Click &quot;New Recording&quot; to capture your first demo, or &quot;Import Video&quot; to edit an existing video file.</p>
           </div>
         ) : (
           <div className={styles.grid}>

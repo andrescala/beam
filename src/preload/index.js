@@ -30,8 +30,13 @@ const electronAPI = {
   detectSilence: (projectId, threshold, minDuration) =>
     ipcRenderer.invoke('detect-silence', projectId, threshold, minDuration),
   whisperAvailable: () => ipcRenderer.invoke('whisper-available'),
+  whisperStatus: () => ipcRenderer.invoke('whisper-status'),
+  whisperDownload: () => ipcRenderer.invoke('whisper-download'),
   transcribeRecording: (projectId, opts) =>
     ipcRenderer.invoke('transcribe-recording', projectId, opts),
+
+  // Video import
+  importVideo: () => ipcRenderer.invoke('import-video'),
 
   // SRT export
   exportSrt: (projectId) => ipcRenderer.invoke('export-srt', projectId),
@@ -63,6 +68,16 @@ const electronAPI = {
     const handler = () => callback()
     ipcRenderer.on('shortcut-record-toggle', handler)
     return () => ipcRenderer.removeListener('shortcut-record-toggle', handler)
+  },
+  onWhisperStatusChanged: (callback) => {
+    const handler = (_event, status) => callback(status)
+    ipcRenderer.on('whisper-status-changed', handler)
+    return () => ipcRenderer.removeListener('whisper-status-changed', handler)
+  },
+  onImportProgress: (callback) => {
+    const handler = (_event, percent) => callback(percent)
+    ipcRenderer.on('import-progress', handler)
+    return () => ipcRenderer.removeListener('import-progress', handler)
   }
 }
 

@@ -26,7 +26,7 @@ Built as a free alternative to Loom.
 - **Text layers** — add titles and annotations with font size, color, position, and timing
 - **Image layers** — import logos, arrows, or watermarks with position, size, and timing
 - **Audio layers** — import background music or SFX with volume control and start time
-- **Captions** — caption editor with timing, auto-generation, and SRT export
+- **Captions** — caption editor with timing, Whisper auto-transcription, and SRT export. The speech model stays out of the app bundle: a status chip shows installed / not installed / downloading (with live progress), is clickable to trigger or retry, and the model downloads automatically the first time transcription needs it
 - **Webcam controls** — adjust position (corners), size (10-50%), and shape (circle/rectangle)
 - **Undo / redo** — full edit history (Cmd/Ctrl+Z, Cmd/Ctrl+Shift+Z) with toolbar buttons
 - **Keyboard-first** — Space play/pause, ←/→ frame step (Shift for 1s), Home/End jump, I/O set trim in/out, ? opens help
@@ -57,6 +57,7 @@ Built as a free alternative to Loom.
 - **Progress indicator** — real-time export progress from FFmpeg
 
 ### Projects
+- **Import external videos** — open MP4/MOV/WebM/MKV files as projects and use the full editor (trim, cuts, speed, crop, layers, captions, export) on footage not recorded in Beam
 - **Auto-saved** — every recording creates a project folder immediately
 - **Project list** — home screen with thumbnails, names, dates, and durations
 - **Rename** — double-click project name to rename inline
@@ -285,7 +286,9 @@ Screenshots from `test:screenshots` are saved to `e2e/screenshots/` for visual r
 - [x] Mic & camera device pickers, 1080p webcam capture
 - [x] Tray quick-record + global record hotkey (Cmd/Ctrl+Shift+R)
 - [x] Export quality (CRF), resolution presets, loudness normalization
-- [ ] Bundled whisper.cpp transcription (zero-setup captions)
+- [x] Whisper model auto-download with status chip (model stays out of the bundle; engine is a one-time user install)
+- [x] Bundled ffprobe (probing no longer depends on a system install)
+- [x] External video import — Phase B start ("edit videos not recorded here")
 - [ ] Hardware-accelerated export encoding
 
 See [docs/SPEC.md](docs/SPEC.md) for the full product spec and [docs/GAP_ANALYSIS.md](docs/GAP_ANALYSIS.md) for the prioritized roadmap (external video import, multi-track timeline, social export presets, AI copilot).

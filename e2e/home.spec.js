@@ -36,7 +36,7 @@ test.describe('Home Screen', () => {
 
   test('shows empty state when no projects exist', async () => {
     // Look for the empty state message
-    const emptyText = page.locator('text=No recordings yet')
+    const emptyText = page.locator('text=No projects yet')
     const isVisible = await emptyText.isVisible().catch(() => false)
 
     // Either we have projects or the empty state — both are valid
@@ -56,8 +56,14 @@ test.describe('Home Screen', () => {
   })
 
   test('Import button is visible', async () => {
-    const importBtn = page.locator('button', { hasText: 'Import' })
+    const importBtn = page.locator('button', { hasText: /^Import$/ })
     await expect(importBtn).toBeVisible()
+  })
+
+  test('Import Video button is visible', async () => {
+    const importVideoBtn = page.locator('button', { hasText: 'Import Video' })
+    await expect(importVideoBtn).toBeVisible()
+    await expect(importVideoBtn).toBeEnabled()
   })
 
   test('Help button is visible', async () => {

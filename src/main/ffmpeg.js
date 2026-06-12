@@ -1,20 +1,20 @@
 import ffmpeg from 'fluent-ffmpeg'
 import ffmpegStatic from 'ffmpeg-static'
+import ffprobeStatic from 'ffprobe-static'
 import { join } from 'path'
 import { existsSync, unlinkSync } from 'fs'
 import { mkdir } from 'fs/promises'
-import { spawn } from 'child_process'
 
-// Fix path for asar packaging
+// Fix paths for asar packaging
 const ffmpegPath = ffmpegStatic.replace('app.asar', 'app.asar.unpacked')
-const ffprobePath = ffmpegPath.replace(/ffmpeg$/, 'ffprobe')
 ffmpeg.setFfmpegPath(ffmpegPath)
-// ffmpeg-static ships ffmpeg only; fluent-ffmpeg will look for ffprobe on PATH
-// for ffmpeg.ffprobe(). That's fine on macOS dev but we shell out manually
-// where we need fine-grained packet inspection.
+// ffmpeg-static ships ffmpeg only — bundle ffprobe separately so probing
+// works in packaged apps too (previously it silently relied on a system
+// ffprobe being on PATH).
+ffmpeg.setFfprobePath(ffprobeStatic.path.replace('app.asar', 'app.asar.unpacked'))
 
 // Get video dimensions via ffprobe
-function probeVideo(filePath) {
+export function probeVideo(filePath) {
   return new Promise((resolve, reject) => {
     ffmpeg.ffprobe(filePath, (err, metadata) => {
       if (err) return reject(err)
@@ -131,11 +131,11 @@ function computeOutputDuration(keepSegments) {
  *   • libvpx realtime mode — encoding stays under ~1× realtime on M-series.
  *   • Audio stripped (lives in mic.webm).
  */
-export function remuxWebm(inputPath, outputPath) {
+export function remuxWebm(inputPath, outputPath, opts = {}) {
+  const { keepAudio = false, onProgress = null, durationSec = 0 } = opts
   return new Promise((resolve, reject) => {
-    ffmpeg(inputPath)
+    let command = ffmpeg(inputPath)
       .videoCodec('libvpx')
-      .noAudio()
       .fps(30)
       .outputOptions([
         '-b:v', '3M',
@@ -145,7 +145,28 @@ export function remuxWebm(inputPath, outputPath) {
         '-keyint_min', '30',
         '-pix_fmt', 'yuv420p'
       ])
+
+    if (keepAudio) {
+      // Imported videos carry their audio in the master file (recordings
+      // never do — mic/system live in separate tracks), so the editing
+      // proxy must keep it for preview playback.
+      command = command.audioCodec('libopus').audioBitrate('128k')
+    } else {
+      command = command.noAudio()
+    }
+
+    command
       .save(outputPath)
+      .on('progress', (p) => {
+        if (!onProgress) return
+        if (p.percent) {
+          onProgress(Math.min(100, Math.round(p.percent)))
+        } else if (durationSec > 0 && p.timemark) {
+          const [h, m, s] = p.timemark.split(':').map(parseFloat)
+          const sec = (h || 0) * 3600 + (m || 0) * 60 + (s || 0)
+          onProgress(Math.min(100, Math.round((sec / durationSec) * 100)))
+        }
+      })
       .on('end', () => resolve())
       .on('error', reject)
   })
@@ -420,7 +441,11 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
       // Each keyframe: { time, x, y, zoom, duration }
       // Build a zoompan expression that interpolates between keyframes
       const sorted = [...zoomKeyframes].sort((a, b) => a.time - b.time)
-      const fps = 30
+      // zoompan re-times its output to the given fps (frame count is
+      // preserved, d=1). The stream at this point is already sped up, so
+      // the output rate must be capture-fps × speed — otherwise zoompan
+      // stretches the video back to 1× and desyncs it from the audio.
+      const fps = 30 * speed
       const zoomExprs = []
       const xExprs = []
       const yExprs = []
@@ -678,8 +703,10 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
         partCount++
       }
 
-      // Concat all parts
-      filters.push(`${concatParts.join('')}${concatAudioParts.join('')}concat=n=${partCount}:v=1:a=1[v_final][a_final]`)
+      // Concat all parts. The concat filter requires inputs interleaved per
+      // segment ([v0][a0][v1][a1]…), NOT all video then all audio.
+      const interleaved = concatParts.map((v, i) => v + concatAudioParts[i]).join('')
+      filters.push(`${interleaved}concat=n=${partCount}:v=1:a=1[v_final][a_final]`)
       videoOut = 'v_final'
       audioOut = 'a_final'
     }
