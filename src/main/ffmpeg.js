@@ -181,9 +181,13 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
   }
 
   const crf = CRF_BY_QUALITY[options.quality] || CRF_BY_QUALITY.balanced
-  const targetHeight = options.resolution === '1080p' ? 1080
-    : options.resolution === '720p' ? 720
-    : null
+  // Output framing: either a full WxH target (social presets — reframed by
+  // blur-fill padding or center-crop) or a proportional height cap (the
+  // resolution dropdown).
+  const targetWidth = options.targetWidth || null
+  const targetHeight = options.targetHeight
+    || (options.resolution === '1080p' ? 1080 : options.resolution === '720p' ? 720 : null)
+  const fillMode = options.fillMode === 'crop' ? 'crop' : 'blur'
   const normalizeLoudness = !!options.normalizeLoudness
 
   const screenInfo = await probeVideo(screenPath)
@@ -207,7 +211,8 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
   const outputDir = join(projectPath, 'exports')
   await mkdir(outputDir, { recursive: true })
   const timestamp = Date.now()
-  const outputPath = join(outputDir, `export-${timestamp}.mp4`)
+  const safeLabel = (options.label || '').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '')
+  const outputPath = join(outputDir, `export${safeLabel ? `-${safeLabel}` : ''}-${timestamp}.mp4`)
 
   const webcamPath = project.recordings?.webcam
     ? join(projectPath, project.recordings.webcam)
@@ -255,7 +260,16 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
   for (const layer of audioLayers) {
     const assetPath = join(projectPath, 'assets', layer.file)
     if (existsSync(assetPath)) {
-      audioAssetInputs.push({ layer, path: assetPath })
+      // Asset duration is needed to place the fade-out
+      let assetDuration = 0
+      if (layer.fadeOut > 0) {
+        try {
+          assetDuration = (await probeVideo(assetPath)).duration
+        } catch {
+          // fade-out is skipped when the duration can't be determined
+        }
+      }
+      audioAssetInputs.push({ layer, path: assetPath, assetDuration })
     }
   }
 
@@ -604,13 +618,25 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
       // Mix imported audio layers with recording audio
       const audioLabels = [`[${audioOut}]`]
       for (let i = 0; i < audioAssetInputs.length; i++) {
-        const { layer } = audioAssetInputs[i]
+        const { layer, assetDuration } = audioAssetInputs[i]
         const inputIdx = audioInputMap[i]
         const vol = layer.volume != null ? layer.volume : 0.3
         const delay = Math.round((layer.startTime || 0) * 1000) // adelay uses ms
 
+        // Fades run in the asset's own time (before adelay shifts it)
+        let chain = `volume=${vol}`
+        const fadeIn = layer.fadeIn || 0
+        const fadeOut = layer.fadeOut || 0
+        if (fadeIn > 0) {
+          chain += `,afade=t=in:st=0:d=${fadeIn}`
+        }
+        if (fadeOut > 0 && assetDuration > fadeOut) {
+          chain += `,afade=t=out:st=${(assetDuration - fadeOut).toFixed(3)}:d=${fadeOut}`
+        }
+        chain += `,adelay=${delay}|${delay}`
+
         const label = `aud${i}`
-        filters.push(`[${inputIdx}:a]volume=${vol},adelay=${delay}|${delay}[${label}]`)
+        filters.push(`[${inputIdx}:a]${chain}[${label}]`)
         audioLabels.push(`[${label}]`)
       }
 
@@ -618,13 +644,36 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
       audioOut = 'amixed'
     }
 
-    // ── Step 7b: Output scaling (resolution presets) ──
+    // ── Step 7b: Output reframe / scaling ──
     const refWidth2 = hasCrop ? Math.round(screenInfo.width * crop.width) : screenInfo.width
     const refHeight2 = hasCrop ? Math.round(screenInfo.height * crop.height) : screenInfo.height
     let fw = refWidth2 % 2 === 0 ? refWidth2 : refWidth2 - 1
     let fh = refHeight2 % 2 === 0 ? refHeight2 : refHeight2 - 1
 
-    if (targetHeight && targetHeight < fh) {
+    if (targetWidth && targetHeight) {
+      // Social preset: exact WxH output. Same aspect → plain scale; aspect
+      // change → blur-fill (video fit inside a blurred copy of itself) or
+      // center-crop to fill, per fillMode.
+      const tw = targetWidth % 2 === 0 ? targetWidth : targetWidth - 1
+      const th = targetHeight % 2 === 0 ? targetHeight : targetHeight - 1
+      if (tw !== fw || th !== fh) {
+        const sameAspect = Math.abs(fw / fh - tw / th) < 0.01
+        if (sameAspect) {
+          filters.push(`[${videoOut}]scale=${tw}:${th}:flags=lanczos[v_reframe]`)
+        } else if (fillMode === 'crop') {
+          filters.push(`[${videoOut}]scale=${tw}:${th}:force_original_aspect_ratio=increase:flags=lanczos,crop=${tw}:${th}[v_reframe]`)
+        } else {
+          filters.push(`[${videoOut}]split=2[v_bgsrc][v_fgsrc]`)
+          filters.push(`[v_bgsrc]scale=${tw}:${th}:force_original_aspect_ratio=increase:flags=lanczos,crop=${tw}:${th},boxblur=20:20[v_bg]`)
+          filters.push(`[v_fgsrc]scale=${tw}:${th}:force_original_aspect_ratio=decrease:flags=lanczos[v_fg]`)
+          filters.push(`[v_bg][v_fg]overlay=(W-w)/2:(H-h)/2[v_reframe]`)
+        }
+        videoOut = 'v_reframe'
+        fw = tw
+        fh = th
+      }
+    } else if (targetHeight && targetHeight < fh) {
+      // Proportional height cap (the resolution dropdown)
       const scaledW = Math.round(fw * (targetHeight / fh))
       fw = scaledW % 2 === 0 ? scaledW : scaledW - 1
       fh = targetHeight % 2 === 0 ? targetHeight : targetHeight - 1

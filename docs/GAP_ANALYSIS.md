@@ -126,9 +126,10 @@ The four 🔴 foundation items that everything else builds on, plus cheap wins:
 9. E5 waveforms, E7 transitions, A1–A3 audio basics, E9/L1/L2 overlay upgrades, L4 backgrounds.
 
 ### P2 — Publish everywhere (Phase C) → the social-media ask
-10. **X1** Platform presets + resizing/padding.
-11. **X2** Batch render queue.
-12. C4 caption styles, X6 keyframed reframe, L3 webcam-as-layer.
+10. ✅ **X1** Platform presets + resizing/padding — rendition multi-select in the export modal (Original, YouTube 1080p, TikTok/Reels/Shorts 9:16, Square 1:1, X/LinkedIn 720p) with blur-fill or crop-to-fill reframing, labeled output files.
+11. ✅ **X2** Batch render queue — selected renditions render sequentially with per-rendition progress, partial-failure reporting, and retry.
+12. ✅ **A1-partial** Audio layer fade in/out (trim/loop still open).
+13. C4 caption styles, X6 keyframed reframe, L3 webcam-as-layer.
 
 ### P3 — AI differentiation (Phase D)
 13. **R7** Event capture (native module) → **L5** auto-zoom/click effects/cursor smoothing — the "Screen Studio killer" features.

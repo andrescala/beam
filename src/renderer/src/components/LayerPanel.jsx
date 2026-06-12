@@ -480,6 +480,34 @@ function LayerPanel({ project, projectId, currentTime, onEditChange }) {
                       onChange={(e) => updateAudioLayer(layer.id, { startTime: parseFloat(e.target.value) || 0 })}
                     />
                   </div>
+                  <div className={styles.propRow}>
+                    <label>Fade in</label>
+                    <input
+                      type="number"
+                      className={styles.numInput}
+                      step="0.5"
+                      min="0"
+                      max="10"
+                      value={(layer.fadeIn || 0).toFixed(1)}
+                      onChange={(e) => updateAudioLayer(layer.id, { fadeIn: Math.max(0, parseFloat(e.target.value) || 0) })}
+                      title="Fade-in duration in seconds (applied at export)"
+                    />
+                    <span className={styles.propValue}>s</span>
+                  </div>
+                  <div className={styles.propRow}>
+                    <label>Fade out</label>
+                    <input
+                      type="number"
+                      className={styles.numInput}
+                      step="0.5"
+                      min="0"
+                      max="10"
+                      value={(layer.fadeOut || 0).toFixed(1)}
+                      onChange={(e) => updateAudioLayer(layer.id, { fadeOut: Math.max(0, parseFloat(e.target.value) || 0) })}
+                      title="Fade-out duration in seconds (applied at export)"
+                    />
+                    <span className={styles.propValue}>s</span>
+                  </div>
                 </div>
               </div>
             ))}

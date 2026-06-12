@@ -25,7 +25,7 @@ Built as a free alternative to Loom.
 - **Spatial crop** — aspect ratio presets (16:9, 9:16, 4:3, 1:1) with live preview overlay
 - **Text layers** — add titles and annotations with font size, color, position, and timing
 - **Image layers** — import logos, arrows, or watermarks with position, size, and timing
-- **Audio layers** — import background music or SFX with volume control and start time
+- **Audio layers** — import background music or SFX with volume control, start time, and fade in/out
 - **Captions** — caption editor with timing, Whisper auto-transcription, and SRT export. The speech model stays out of the app bundle: a status chip shows installed / not installed / downloading (with live progress), is clickable to trigger or retry, and the model downloads automatically the first time transcription needs it
 - **Webcam controls** — adjust position (corners), size (10-50%), and shape (circle/rectangle)
 - **Undo / redo** — full edit history (Cmd/Ctrl+Z, Cmd/Ctrl+Shift+Z) with toolbar buttons
@@ -49,6 +49,8 @@ Built as a free alternative to Loom.
 
 ### Export
 - **MP4 (H.264)** — high-quality export via FFmpeg with all effects and overlays
+- **Social renditions** — export one edit to multiple channel sizes in a single run: YouTube (1920×1080), TikTok/Reels/Shorts (1080×1920), Square (1080×1080), X/LinkedIn (1280×720). Aspect changes use blur-fill (video framed inside a blurred copy of itself) or crop-to-fill, your choice
+- **Batch queue** — selected renditions render sequentially with per-rendition progress; output files are labeled (`export-vertical-…`, `export-square-…`)
 - **Quality & resolution options** — High/Balanced/Smaller (CRF 18/23/28); Source/1080p/720p output scaling
 - **Loudness normalization** — optional −14 LUFS target for social/YouTube
 - **GIF** — palette-optimized animated GIF export (640px, 15fps)
@@ -289,6 +291,8 @@ Screenshots from `test:screenshots` are saved to `e2e/screenshots/` for visual r
 - [x] Whisper model auto-download with status chip (model stays out of the bundle; engine is a one-time user install)
 - [x] Bundled ffprobe (probing no longer depends on a system install)
 - [x] External video import — Phase B start ("edit videos not recorded here")
+- [x] Social export renditions with batch queue (YouTube / 9:16 / 1:1 / 720p; blur-fill or crop reframing)
+- [x] Audio layer fade in/out
 - [ ] Hardware-accelerated export encoding
 
 See [docs/SPEC.md](docs/SPEC.md) for the full product spec and [docs/GAP_ANALYSIS.md](docs/GAP_ANALYSIS.md) for the prioritized roadmap (external video import, multi-track timeline, social export presets, AI copilot).
