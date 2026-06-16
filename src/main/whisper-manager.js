@@ -25,6 +25,10 @@ import { resolveWhisperBin, isCliVariant } from './transcribe.js'
 const MODEL_NAME = 'ggml-base.en.bin'
 const MODEL_URL = `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${MODEL_NAME}`
 const MODEL_SIZE_LABEL = '142 MB'
+// ggml-base.en.bin is ~142 MB. When the server doesn't send Content-Length we
+// can't compare received vs total, so we use this as a floor sanity-check to
+// reject a truncated download instead of renaming a corrupt file into place.
+const MODEL_MIN_BYTES = 100 * 1024 * 1024
 
 let downloadState = null // null | { promise, progress }
 let lastError = null
@@ -127,8 +131,15 @@ export function downloadModel() {
         await new Promise((resolve) => out.end(resolve))
       }
 
-      if (total > 0 && received < total) {
-        throw new Error('Download incomplete — connection interrupted')
+      // Reject truncated downloads. When Content-Length is known, require the
+      // full byte count; when it isn't (chunked transfer), fall back to a
+      // minimum-size floor so a half-written file is never accepted as ready.
+      if (total > 0) {
+        if (received < total) {
+          throw new Error('Download incomplete — connection interrupted')
+        }
+      } else if (received < MODEL_MIN_BYTES) {
+        throw new Error('Download incomplete — received fewer bytes than expected')
       }
 
       await rename(partPath, getModelPath())

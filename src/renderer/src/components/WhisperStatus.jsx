@@ -34,14 +34,20 @@ function WhisperStatus() {
         'info',
         'Install the Whisper engine once: `brew install whisper-cpp` (macOS) or `pip install openai-whisper`. Beam downloads the model for you.'
       )
-      // Re-check in case the user just installed it
-      window.electronAPI.whisperStatus().then(setStatus).catch(() => {})
+      // Re-check in case the user just installed it — but never let this stale
+      // snapshot overwrite a live 'downloading' state pushed by an event (e.g.
+      // an auto-download that started between the click and this resolving).
+      window.electronAPI.whisperStatus()
+        .then((fresh) => setStatus((prev) => (prev?.status === 'downloading' ? prev : fresh)))
+        .catch(() => {})
       return
     }
     if (status.status === 'model-missing' || status.status === 'error') {
       showToast('info', `Downloading Whisper model (${status.modelSizeLabel})…`)
       const final = await window.electronAPI.whisperDownload()
-      setStatus(final)
+      // Only apply the terminal result if a newer download isn't already in
+      // flight (status events remain the source of truth while downloading).
+      setStatus((prev) => (prev?.status === 'downloading' && final.status !== 'ready' && final.status !== 'error' ? prev : final))
       if (final.status === 'ready') {
         showToast('success', 'Whisper model downloaded — captions are ready')
       } else if (final.status === 'error') {

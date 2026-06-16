@@ -1,8 +1,19 @@
 import { app } from 'electron'
 import { join, basename } from 'path'
-import { readdir, readFile, writeFile, mkdir, rm, copyFile } from 'fs/promises'
+import { readdir, readFile, writeFile, mkdir, rm, copyFile, rename } from 'fs/promises'
 import { existsSync } from 'fs'
 import { v4 as uuid } from 'uuid'
+
+/**
+ * Write a file atomically: write to a temp sibling, then rename into place.
+ * rename() is atomic on the same filesystem, so an interrupted write leaves
+ * only the temp file behind — never a truncated final file.
+ */
+async function writeFileAtomic(destPath, data) {
+  const tmpPath = `${destPath}.part`
+  await writeFile(tmpPath, data)
+  await rename(tmpPath, destPath)
+}
 
 const PROJECTS_DIR = join(app.getPath('home'), 'Beam', 'projects')
 
@@ -191,7 +202,7 @@ export async function saveRawRecording(projectId, type, buffer) {
     // VideoToolbox bugs (-12909) that H.264 triggers.
     filename = `${type}-master.webm`
     const masterPath = join(projectPath, filename)
-    await writeFile(masterPath, Buffer.from(buffer))
+    await writeFileAtomic(masterPath, Buffer.from(buffer))
 
     proxyFilename = `${type}.webm`
     const proxyPath = join(projectPath, proxyFilename)
@@ -206,7 +217,7 @@ export async function saveRawRecording(projectId, type, buffer) {
     // Audio-only outputs (mic.webm, system.webm) stay as-is — playback as
     // an <audio> element doesn't have the same seek issues.
     filename = `${type}.webm`
-    await writeFile(join(projectPath, filename), Buffer.from(buffer))
+    await writeFileAtomic(join(projectPath, filename), Buffer.from(buffer))
   }
 
   // Update project.json

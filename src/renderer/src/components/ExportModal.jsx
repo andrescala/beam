@@ -100,7 +100,9 @@ function ExportModal({ project, onClose }) {
           label: r.key === 'original' ? '' : r.key,
           targetWidth: r.targetWidth,
           targetHeight: r.targetHeight,
-          resolution: r.key === 'original' ? resolution : undefined
+          // Resolution is a proportional height cap that composes on top of
+          // any preset reframe, so it applies to every rendition.
+          resolution
         })
         if (result.error) {
           failures++
@@ -112,6 +114,11 @@ function ExportModal({ project, onClose }) {
       } catch (err) {
         failures++
         setJobs((prev) => prev.map((j) => (j.key === r.key ? { ...j, status: 'failed', error: err.message } : j)))
+      } finally {
+        // Clear the active job before the next iteration so a late progress
+        // event from this just-finished rendition can't be attributed to the
+        // next one (the shared export-progress channel carries no job id).
+        activeJobRef.current = null
       }
     }
     activeJobRef.current = null
@@ -229,20 +236,18 @@ function ExportModal({ project, onClose }) {
                         <option value="small">Smaller file</option>
                       </select>
                     </div>
-                    {selectedKeys.has('original') && (
-                      <div className={styles.optionRow}>
-                        <span>Original resolution</span>
-                        <select
-                          className={styles.optionSelect}
-                          value={resolution}
-                          onChange={(e) => setResolution(e.target.value)}
-                        >
-                          <option value="source">Source (original)</option>
-                          <option value="1080p">1080p</option>
-                          <option value="720p">720p</option>
-                        </select>
-                      </div>
-                    )}
+                    <div className={styles.optionRow}>
+                      <span>Max resolution</span>
+                      <select
+                        className={styles.optionSelect}
+                        value={resolution}
+                        onChange={(e) => setResolution(e.target.value)}
+                      >
+                        <option value="source">No cap</option>
+                        <option value="1080p">1080p</option>
+                        <option value="720p">720p</option>
+                      </select>
+                    </div>
                     <div className={styles.optionRow}>
                       <label className={styles.optionCheck}>
                         <input

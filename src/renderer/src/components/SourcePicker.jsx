@@ -86,6 +86,9 @@ function SourcePicker({ onSelect, onCancel, webcamEnabled, onWebcamToggle, syste
       if (webcamRef.current) {
         webcamRef.current.srcObject = stream
       }
+      // Granting camera access unlocks real device labels — re-enumerate so
+      // the picker shows proper names instead of "Camera"/"Microphone".
+      loadDevices()
     } catch (err) {
       console.error('Webcam access failed:', err)
       onWebcamToggle(false)

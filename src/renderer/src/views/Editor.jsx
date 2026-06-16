@@ -31,6 +31,7 @@ function Editor() {
   // drags don't re-render, and so StrictMode's double-invoked updaters can't
   // corrupt it. `historyVersion` only refreshes the toolbar button state.
   const projectRef = useRef(null)
+  const currentTimeRef = useRef(0)
   const historyRef = useRef({ past: [], future: [] })
   const lastPushRef = useRef(0)
   const [, setHistoryVersion] = useState(0)
@@ -38,6 +39,12 @@ function Editor() {
   useEffect(() => {
     projectRef.current = project
   }, [project])
+
+  // Keep a ref of the playhead so the keyboard handler reads a fresh value
+  // even when the <video> element isn't mounted (it isn't in the effect deps).
+  useEffect(() => {
+    currentTimeRef.current = currentTime
+  }, [currentTime])
 
   useEffect(() => {
     loadProject()
@@ -168,7 +175,7 @@ function Editor() {
       const p = projectRef.current
       if (!p) return
       const duration = p.duration || 0
-      const t = videoRef.current ? videoRef.current.currentTime : currentTime
+      const t = videoRef.current ? videoRef.current.currentTime : currentTimeRef.current
       const frameStep = e.shiftKey ? 1 : 1 / 30
 
       switch (e.key) {

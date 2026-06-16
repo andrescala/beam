@@ -181,12 +181,19 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
   }
 
   const crf = CRF_BY_QUALITY[options.quality] || CRF_BY_QUALITY.balanced
-  // Output framing: either a full WxH target (social presets — reframed by
-  // blur-fill padding or center-crop) or a proportional height cap (the
-  // resolution dropdown).
+  // Two independent, composable sizing inputs:
+  //   • targetWidth+targetHeight — a social preset's exact WxH box, reached by
+  //     blur-fill or center-crop reframing (changes aspect ratio).
+  //   • capHeight — a proportional downscale cap from the resolution dropdown
+  //     (preserves aspect ratio).
+  // Both can apply: a social reframe runs first, then the cap shrinks the
+  // result if it's still taller than the cap. Keeping them separate means the
+  // resolution dropdown is never silently shadowed by a preset.
   const targetWidth = options.targetWidth || null
-  const targetHeight = options.targetHeight
-    || (options.resolution === '1080p' ? 1080 : options.resolution === '720p' ? 720 : null)
+  const targetHeight = options.targetHeight || null
+  const capHeight = options.resolution === '1080p' ? 1080
+    : options.resolution === '720p' ? 720
+    : null
   const fillMode = options.fillMode === 'crop' ? 'crop' : 'blur'
   const normalizeLoudness = !!options.normalizeLoudness
 
@@ -365,23 +372,33 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
     // ── Step 1b: Trim/cut each recording-audio source the same way ──
     const recAudioOuts = []
     recordingAudio.forEach((src, s) => {
-      // FFT-based background-noise reduction on the mic, applied at the
-      // source so it precedes trimming/speed/volume.
-      const pre = src.denoise ? 'afftdn=nf=-25,' : ''
-      if (hasCuts) {
+      // FFT-based background-noise reduction on the mic. Applied ONCE to the
+      // whole source before any cut/trim split, so the denoiser trains its
+      // noise estimate on a continuous stream (applying it per-segment would
+      // restart adaptation at every cut, causing audible pumping). The
+      // denoised stream is reused across all keep-segments.
+      let srcLabel = src.label
+      if (src.denoise) {
+        filters.push(`${src.label}afftdn=nf=-25[sa${s}_dn]`)
+        srcLabel = `[sa${s}_dn]`
+      }
+      if (hasCuts && keepSegments.length > 1) {
+        // Fan the (possibly denoised) source out into one branch per keep
+        // segment, trim each, then concat — a label can only be consumed
+        // once, so asplit is required when there are multiple segments.
+        const splitOuts = keepSegments.map((_, i) => `[sa${s}_src${i}]`).join('')
+        filters.push(`${srcLabel}asplit=${keepSegments.length}${splitOuts}`)
         const aParts = []
         keepSegments.forEach((seg, i) => {
-          filters.push(`${src.label}${pre}atrim=start=${seg.start}:end=${seg.end},asetpts=PTS-STARTPTS[sa${s}_${i}]`)
+          filters.push(`[sa${s}_src${i}]atrim=start=${seg.start}:end=${seg.end},asetpts=PTS-STARTPTS[sa${s}_${i}]`)
           aParts.push(`[sa${s}_${i}]`)
         })
-        if (keepSegments.length > 1) {
-          filters.push(`${aParts.join('')}concat=n=${keepSegments.length}:v=0:a=1[sa${s}_concat]`)
-          recAudioOuts.push(`sa${s}_concat`)
-        } else {
-          recAudioOuts.push(`sa${s}_0`)
-        }
+        filters.push(`${aParts.join('')}concat=n=${keepSegments.length}:v=0:a=1[sa${s}_concat]`)
+        recAudioOuts.push(`sa${s}_concat`)
       } else {
-        filters.push(`${src.label}${pre}atrim=start=${trimStart}:end=${trimEnd},asetpts=PTS-STARTPTS[sa${s}_trim]`)
+        // Single keep-segment (with or without cuts): one trim covers it.
+        const seg = hasCuts ? keepSegments[0] : { start: trimStart, end: trimEnd }
+        filters.push(`${srcLabel}atrim=start=${seg.start}:end=${seg.end},asetpts=PTS-STARTPTS[sa${s}_trim]`)
         recAudioOuts.push(`sa${s}_trim`)
       }
     })
@@ -419,7 +436,13 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
     if (recAudioOuts.length === 1) {
       audioOut = recAudioOuts[0]
     } else if (recAudioOuts.length > 1) {
-      filters.push(`${recAudioOuts.map((l) => `[${l}]`).join('')}amix=inputs=${recAudioOuts.length}:duration=first:normalize=0[sa_recmix]`)
+      // Mix mic + system. normalize=0 keeps the user's per-track volumes
+      // intact (amix's default normalize would silently halve everything),
+      // but summing two near-full-scale sources can exceed 0 dBFS, so a
+      // soft limiter catches the peaks instead of letting them hard-clip.
+      // duration=longest avoids truncating the system track if it ran a few
+      // ms longer than the mic.
+      filters.push(`${recAudioOuts.map((l) => `[${l}]`).join('')}amix=inputs=${recAudioOuts.length}:duration=longest:normalize=0,alimiter=limit=0.97[sa_recmix]`)
       audioOut = 'sa_recmix'
     }
 
@@ -650,8 +673,16 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
         if (fadeIn > 0) {
           chain += `,afade=t=in:st=0:d=${fadeIn}`
         }
-        if (fadeOut > 0 && assetDuration > fadeOut) {
-          chain += `,afade=t=out:st=${(assetDuration - fadeOut).toFixed(3)}:d=${fadeOut}`
+        if (fadeOut > 0) {
+          if (assetDuration > fadeOut) {
+            chain += `,afade=t=out:st=${(assetDuration - fadeOut).toFixed(3)}:d=${fadeOut}`
+          } else {
+            // Duration unknown (probe failed) — fade out anchored to the end
+            // of the stream via the reverse trick, so the fade is never
+            // silently dropped. areverse buffers the layer, which is fine
+            // for music/SFX beds.
+            chain += `,areverse,afade=t=in:st=0:d=${fadeOut},areverse`
+          }
         }
         chain += `,adelay=${delay}|${delay}`
 
@@ -684,27 +715,43 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
       const th = targetHeight % 2 === 0 ? targetHeight : targetHeight - 1
       if (tw !== fw || th !== fh) {
         const sameAspect = Math.abs(fw / fh - tw / th) < 0.01
+        // setsar=1 keeps square pixels — the scale/crop math can otherwise
+        // yield a non-1:1 SAR that breaks the intro/outro concat (which
+        // requires every segment's SAR to match the 1:1 card sources).
         if (sameAspect) {
-          filters.push(`[${videoOut}]scale=${tw}:${th}:flags=lanczos[v_reframe]`)
+          filters.push(`[${videoOut}]scale=${tw}:${th}:flags=lanczos,setsar=1[v_reframe]`)
         } else if (fillMode === 'crop') {
-          filters.push(`[${videoOut}]scale=${tw}:${th}:force_original_aspect_ratio=increase:flags=lanczos,crop=${tw}:${th}[v_reframe]`)
+          filters.push(`[${videoOut}]scale=${tw}:${th}:force_original_aspect_ratio=increase:flags=lanczos,crop=${tw}:${th},setsar=1[v_reframe]`)
         } else {
           filters.push(`[${videoOut}]split=2[v_bgsrc][v_fgsrc]`)
           filters.push(`[v_bgsrc]scale=${tw}:${th}:force_original_aspect_ratio=increase:flags=lanczos,crop=${tw}:${th},boxblur=20:20[v_bg]`)
           filters.push(`[v_fgsrc]scale=${tw}:${th}:force_original_aspect_ratio=decrease:flags=lanczos[v_fg]`)
-          filters.push(`[v_bg][v_fg]overlay=(W-w)/2:(H-h)/2[v_reframe]`)
+          filters.push(`[v_bg][v_fg]overlay=(W-w)/2:(H-h)/2,setsar=1[v_reframe]`)
         }
         videoOut = 'v_reframe'
         fw = tw
         fh = th
       }
-    } else if (targetHeight && targetHeight < fh) {
-      // Proportional height cap (the resolution dropdown)
-      const scaledW = Math.round(fw * (targetHeight / fh))
+    }
+
+    // Proportional height cap (resolution dropdown) — composes on top of any
+    // social reframe above.
+    if (capHeight && capHeight < fh) {
+      const scaledW = Math.round(fw * (capHeight / fh))
       fw = scaledW % 2 === 0 ? scaledW : scaledW - 1
-      fh = targetHeight % 2 === 0 ? targetHeight : targetHeight - 1
-      filters.push(`[${videoOut}]scale=${fw}:${fh}:flags=lanczos[v_resized]`)
+      fh = capHeight % 2 === 0 ? capHeight : capHeight - 1
+      filters.push(`[${videoOut}]scale=${fw}:${fh}:flags=lanczos,setsar=1[v_resized]`)
       videoOut = 'v_resized'
+    }
+
+    // ── Step 7c: Loudness normalization ──
+    // Applied to the mixed CONTENT audio before any intro/outro silence is
+    // concatenated around it — otherwise loudnorm's measurement window
+    // includes the leading/trailing silent cards and skews the gain,
+    // producing an audible level ramp at the start of real content.
+    if (normalizeLoudness) {
+      filters.push(`[${audioOut}]loudnorm=I=-14:TP=-1.5:LRA=11[a_norm]`)
+      audioOut = 'a_norm'
     }
 
     // ── Step 8: Intro/outro title cards ──
@@ -713,6 +760,14 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
       // Ensure main content dimensions match title cards for concat
       filters.push(`[${videoOut}]scale=${fw}:${fh}:force_original_aspect_ratio=disable[v_scaled]`)
       videoOut = 'v_scaled'
+
+      // concat requires every segment's audio to share sample rate, format,
+      // and channel layout. Upstream filters (notably loudnorm, which emits
+      // 192 kHz) and the silent card sources would otherwise mismatch, so we
+      // force a common format on the content audio and on each card's silence.
+      const AFMT = 'aformat=sample_rates=48000:channel_layouts=stereo'
+      filters.push(`[${audioOut}]${AFMT}[a_concat_main]`)
+      audioOut = 'a_concat_main'
 
       const concatParts = []
       const concatAudioParts = []
@@ -740,8 +795,8 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
         }
 
         concatParts.push(`[${introLabel}]`)
-        // Silent audio for intro
-        filters.push(`aevalsrc=0:d=${dur}[intro_a]`)
+        // Silent audio for intro (matched to the content audio format)
+        filters.push(`aevalsrc=0:d=${dur},${AFMT}[intro_a]`)
         concatAudioParts.push(`[intro_a]`)
         partCount++
       }
@@ -773,7 +828,7 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
         }
 
         concatParts.push(`[${outroLabel}]`)
-        filters.push(`aevalsrc=0:d=${dur}[outro_a]`)
+        filters.push(`aevalsrc=0:d=${dur},${AFMT}[outro_a]`)
         concatAudioParts.push(`[outro_a]`)
         partCount++
       }
@@ -784,12 +839,6 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
       filters.push(`${interleaved}concat=n=${partCount}:v=1:a=1[v_final][a_final]`)
       videoOut = 'v_final'
       audioOut = 'a_final'
-    }
-
-    // ── Step 9: Loudness normalization (social/YouTube target) ──
-    if (normalizeLoudness) {
-      filters.push(`[${audioOut}]loudnorm=I=-14:TP=-1.5:LRA=11[a_norm]`)
-      audioOut = 'a_norm'
     }
 
     command = command.complexFilter(filters.join(';'))
