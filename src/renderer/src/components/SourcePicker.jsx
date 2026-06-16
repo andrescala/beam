@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import styles from './SourcePicker.module.css'
 
-function SourcePicker({ onSelect, onCancel, webcamEnabled, onWebcamToggle, systemAudioEnabled, onSystemAudioToggle, onStart, selectedSource }) {
+function SourcePicker({ onSelect, onCancel, webcamEnabled, onWebcamToggle, systemAudioEnabled, onSystemAudioToggle, onStart, selectedSource, fps, onFpsChange, captureMode, onCaptureModeChange, region, onRegionChange }) {
   const [sources, setSources] = useState([])
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState('screen')
@@ -12,6 +12,10 @@ function SourcePicker({ onSelect, onCancel, webcamEnabled, onWebcamToggle, syste
   const [cameraDeviceId, setCameraDeviceId] = useState('')
   const webcamRef = useRef(null)
   const webcamStreamRef = useRef(null)
+  // Region selector (R4): a drag on the selected screen's preview, stored as
+  // fractions of the screen (0..1). dragRef holds the in-progress drag origin.
+  const regionBoxRef = useRef(null)
+  const dragRef = useRef(null)
 
   useEffect(() => {
     checkPermissionsAndLoadSources()
@@ -101,6 +105,47 @@ function SourcePicker({ onSelect, onCancel, webcamEnabled, onWebcamToggle, syste
       webcamStreamRef.current = null
     }
   }
+
+  // ── Region drag selection (R4) ──
+  // Convert a pointer event to fractional coords inside the preview box,
+  // clamped to [0,1] so the rect never escapes the screen bounds.
+  function pointToFraction(e) {
+    const rect = regionBoxRef.current.getBoundingClientRect()
+    const fx = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width))
+    const fy = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height))
+    return { fx, fy }
+  }
+
+  function handleRegionPointerDown(e) {
+    if (!regionBoxRef.current) return
+    e.preventDefault()
+    const { fx, fy } = pointToFraction(e)
+    dragRef.current = { fx, fy }
+    onRegionChange({ x: fx, y: fy, width: 0, height: 0 })
+  }
+
+  function handleRegionPointerMove(e) {
+    if (!dragRef.current) return
+    const { fx, fy } = pointToFraction(e)
+    const start = dragRef.current
+    onRegionChange({
+      x: Math.min(start.fx, fx),
+      y: Math.min(start.fy, fy),
+      width: Math.abs(fx - start.fx),
+      height: Math.abs(fy - start.fy)
+    })
+  }
+
+  function handleRegionPointerUp() {
+    if (!dragRef.current) return
+    dragRef.current = null
+    // Discard accidental clicks (a near-zero rect isn't a usable region).
+    if (region && (region.width < 0.02 || region.height < 0.02)) {
+      onRegionChange(null)
+    }
+  }
+
+  const isScreenSelected = selectedSource && selectedSource.id.startsWith('screen:')
 
   const screens = sources.filter((s) => s.id.startsWith('screen:'))
   const windows = sources.filter((s) => s.id.startsWith('window:'))
@@ -194,7 +239,15 @@ function SourcePicker({ onSelect, onCancel, webcamEnabled, onWebcamToggle, syste
               <div
                 key={source.id}
                 className={`${styles.sourceCard} ${selectedSource?.id === source.id ? styles.selected : ''}`}
-                onClick={() => onSelect(source)}
+                onClick={() => {
+                  onSelect(source)
+                  // Region capture only applies to whole screens; reset it when
+                  // a window is chosen so a stale crop isn't recorded.
+                  if (!source.id.startsWith('screen:')) {
+                    onCaptureModeChange('full')
+                    onRegionChange(null)
+                  }
+                }}
               >
                 <img src={source.thumbnail} alt={source.name} className={styles.sourceThumb} />
                 <div className={styles.sourceName}>{source.name}</div>
@@ -202,6 +255,89 @@ function SourcePicker({ onSelect, onCancel, webcamEnabled, onWebcamToggle, syste
             ))}
           </div>
         )}
+
+        {/* Capture options (R4 region + R9 fps) */}
+        <div className={styles.captureOptions}>
+          <div className={styles.optionRow}>
+            <span className={styles.optionLabel}>Frame rate</span>
+            <div className={styles.segmented}>
+              <button
+                type="button"
+                className={`${styles.segBtn} ${fps === 30 ? styles.segActive : ''}`}
+                onClick={() => onFpsChange(30)}
+              >
+                30 fps
+              </button>
+              <button
+                type="button"
+                className={`${styles.segBtn} ${fps === 60 ? styles.segActive : ''}`}
+                onClick={() => onFpsChange(60)}
+              >
+                60 fps
+              </button>
+            </div>
+          </div>
+
+          {isScreenSelected && (
+            <div className={styles.optionRow}>
+              <span className={styles.optionLabel}>Capture</span>
+              <div className={styles.segmented}>
+                <button
+                  type="button"
+                  className={`${styles.segBtn} ${captureMode === 'full' ? styles.segActive : ''}`}
+                  onClick={() => {
+                    onCaptureModeChange('full')
+                    onRegionChange(null)
+                  }}
+                >
+                  Full screen
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.segBtn} ${captureMode === 'region' ? styles.segActive : ''}`}
+                  onClick={() => onCaptureModeChange('region')}
+                >
+                  Region
+                </button>
+              </div>
+            </div>
+          )}
+
+          {isScreenSelected && captureMode === 'region' && (
+            <div className={styles.regionPicker}>
+              <div className={styles.regionHint}>
+                Drag on the preview to select the area to record. The full screen is
+                recorded; the region is applied as a crop you can adjust later.
+              </div>
+              <div
+                ref={regionBoxRef}
+                className={styles.regionBox}
+                onPointerDown={handleRegionPointerDown}
+                onPointerMove={handleRegionPointerMove}
+                onPointerUp={handleRegionPointerUp}
+                onPointerLeave={handleRegionPointerUp}
+              >
+                <img
+                  src={selectedSource.thumbnail}
+                  alt={selectedSource.name}
+                  className={styles.regionImg}
+                  draggable={false}
+                />
+                {region && region.width > 0 && region.height > 0 && (
+                  <div
+                    className={styles.regionRect}
+                    style={{
+                      left: `${region.x * 100}%`,
+                      top: `${region.y * 100}%`,
+                      width: `${region.width * 100}%`,
+                      height: `${region.height * 100}%`
+                    }}
+                  />
+                )}
+              </div>
+            </div>
+          )}
+        </div>
 
         <div className={styles.webcamToggle}>
           <label className={styles.toggleLabel}>

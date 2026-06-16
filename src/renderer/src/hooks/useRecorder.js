@@ -7,6 +7,12 @@ export default function useRecorder() {
   const [webcamEnabled, setWebcamEnabledState] = useState(false)
   const [systemAudioEnabled, setSystemAudioEnabledState] = useState(false)
   const [webcamStream, setWebcamStream] = useState(null)
+  const [fps, setFpsState] = useState(30) // capture frame rate (R9): 30 or 60
+  // Region capture (R4): mode 'full' records the whole screen; 'region' still
+  // records full-screen but stores a crop rect (fractions of the screen) that
+  // the export pipeline applies as an edit. null region => full screen.
+  const [captureMode, setCaptureMode] = useState('full')
+  const [region, setRegion] = useState(null) // { x, y, width, height } as fractions
 
   const screenRecorderRef = useRef(null)
   const webcamRecorderRef = useRef(null)
@@ -25,15 +31,25 @@ export default function useRecorder() {
   const micStreamRef = useRef(null)
   // Track elapsed in a ref so the onstop closure always has the latest value
   const elapsedRef = useRef(0)
+  // Whether crash-safe disk streaming succeeded for each track. If a chunk
+  // append fails we fall back to the in-memory save path on stop.
+  const streamingOkRef = useRef({ screen: true, webcam: true, mic: true, system: true })
 
   // Load recording preferences on mount
   useEffect(() => {
     window.electronAPI.getPreferences().then((prefs) => {
       setWebcamEnabledState(prefs.webcamEnabled ?? false)
       setSystemAudioEnabledState(prefs.systemAudioEnabled ?? false)
+      setFpsState(prefs.fps ?? 30)
     }).catch(() => {})
     return () => cleanup()
   }, [])
+
+  // Persist frame-rate preference (R9)
+  function setFps(value) {
+    setFpsState(value)
+    window.electronAPI.setPreferences({ fps: value }).catch(() => {})
+  }
 
   // Persist webcam toggle to preferences
   function setWebcamEnabled(enabled) {
@@ -64,6 +80,25 @@ export default function useRecorder() {
     setSelectedSource(source)
   }
 
+  // Wire a recorder's ondataavailable to BOTH stream each chunk to disk
+  // (crash-safe, R8) and keep it in memory as a fallback. If a disk append
+  // fails we flag that track so stop() falls back to the in-memory blob.
+  function attachChunkHandler(recorder, chunksRef, type) {
+    recorder.ondataavailable = async (e) => {
+      if (!e.data || e.data.size === 0) return
+      chunksRef.current.push(e.data)
+      const projectId = projectIdRef.current
+      if (!projectId || !streamingOkRef.current[type]) return
+      try {
+        const buffer = await e.data.arrayBuffer()
+        await window.electronAPI.appendRecordingChunk(projectId, type, buffer)
+      } catch (err) {
+        console.warn(`Chunk streaming failed for ${type}, falling back to in-memory save:`, err)
+        streamingOkRef.current[type] = false
+      }
+    }
+  }
+
   // Pre-warm everything before the countdown so the moment it ends we can
   // call MediaRecorder.start() instantly with no async setup gap. This
   // prevents the recorder from missing the first 300–500ms after countdown
@@ -78,6 +113,7 @@ export default function useRecorder() {
         `Recording — ${new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`
       )
       projectIdRef.current = project.id
+      streamingOkRef.current = { screen: true, webcam: true, mic: true, system: true }
 
       await window.electronAPI.setCaptureSource(selectedSource.id)
 
@@ -93,17 +129,20 @@ export default function useRecorder() {
       // stream (Electron loopback). It is recorded as its own file, never
       // mixed into the screen recorder. Platforms without loopback support
       // simply return no audio track — recording proceeds without it.
+      // R9: request the chosen frame rate (30 or 60). getDisplayMedia treats
+      // frameRate as a max/ideal hint — the source may deliver fewer fps.
+      const videoConstraints = { frameRate: { ideal: fps, max: fps } }
       let screenStream
       try {
         screenStream = await navigator.mediaDevices.getDisplayMedia({
-          video: true,
+          video: videoConstraints,
           audio: systemAudioEnabled
         })
       } catch (err) {
         if (!systemAudioEnabled) throw err
         console.warn('Display capture with system audio failed, retrying video-only:', err)
         screenStream = await navigator.mediaDevices.getDisplayMedia({
-          video: true,
+          video: videoConstraints,
           audio: false
         })
       }
@@ -162,17 +201,13 @@ export default function useRecorder() {
 
       screenChunksRef.current = []
       const screenRecorder = new MediaRecorder(combinedStream, { mimeType: videoMime })
-      screenRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) screenChunksRef.current.push(e.data)
-      }
+      attachChunkHandler(screenRecorder, screenChunksRef, 'screen')
       screenRecorderRef.current = screenRecorder
 
       if (micStream) {
         micChunksRef.current = []
         const micRecorder = new MediaRecorder(micStream, { mimeType: audioMime })
-        micRecorder.ondataavailable = (e) => {
-          if (e.data.size > 0) micChunksRef.current.push(e.data)
-        }
+        attachChunkHandler(micRecorder, micChunksRef, 'mic')
         micRecorderRef.current = micRecorder
       }
 
@@ -183,9 +218,7 @@ export default function useRecorder() {
         systemChunksRef.current = []
         const systemStream = new MediaStream(systemAudioTracks)
         const systemRecorder = new MediaRecorder(systemStream, { mimeType: audioMime })
-        systemRecorder.ondataavailable = (e) => {
-          if (e.data.size > 0) systemChunksRef.current.push(e.data)
-        }
+        attachChunkHandler(systemRecorder, systemChunksRef, 'system')
         systemRecorderRef.current = systemRecorder
       } else if (systemAudioEnabled) {
         console.warn('System audio requested but no loopback track available on this platform')
@@ -194,9 +227,7 @@ export default function useRecorder() {
       if (wcStream) {
         webcamChunksRef.current = []
         const wcRecorder = new MediaRecorder(wcStream, { mimeType: videoMime })
-        wcRecorder.ondataavailable = (e) => {
-          if (e.data.size > 0) webcamChunksRef.current.push(e.data)
-        }
+        attachChunkHandler(wcRecorder, webcamChunksRef, 'webcam')
         webcamRecorderRef.current = wcRecorder
       }
 
@@ -389,11 +420,35 @@ export default function useRecorder() {
         console.log(`System audio saved: ${(systemBlob.size / 1024 / 1024).toFixed(1)} MB`)
       }
 
-      // Update project with duration
+      // Crash-safe streaming (R8): the real recordings are now saved via the
+      // in-memory path above, so close the per-track disk streams and drop the
+      // `.part` backups. Doing this AFTER the saves means a crash before here
+      // still leaves a recoverable `.part` on disk.
+      await Promise.all(
+        ['screen', 'webcam', 'mic', 'system'].map((type) =>
+          window.electronAPI.finalizeRecording(projectId, type).catch(() => {})
+        )
+      )
+
+      // Update project with duration, chosen fps (R9), and region crop (R4).
       try {
         const project = await window.electronAPI.loadProject(projectId)
         project.duration = finalElapsed
         project.edit.trimEnd = finalElapsed
+        project.fps = fps
+        // Region capture stores a crop rect the export pipeline renders. The
+        // recording itself is full-screen; aspectRatio:'custom' makes hasCrop
+        // true in ffmpeg.js (which only skips aspectRatio:'original').
+        if (captureMode === 'region' && region) {
+          project.edit.crop = {
+            enabled: true,
+            aspectRatio: 'custom',
+            x: region.x,
+            y: region.y,
+            width: region.width,
+            height: region.height
+          }
+        }
         await window.electronAPI.saveProject(projectId, project)
       } catch (err) {
         console.error('Failed to update project duration:', err)
@@ -421,9 +476,15 @@ export default function useRecorder() {
     webcamEnabled,
     systemAudioEnabled,
     webcamStream,
+    fps,
+    captureMode,
+    region,
     selectSource,
     setWebcamEnabled,
     setSystemAudioEnabled,
+    setFps,
+    setCaptureMode,
+    setRegion,
     startCountdown,
     startRecording,
     pauseRecording,

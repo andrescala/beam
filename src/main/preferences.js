@@ -5,6 +5,7 @@ const schema = {
   defaultQuality: { type: 'string', default: 'balanced' },
   webcamEnabled: { type: 'boolean', default: true },
   systemAudioEnabled: { type: 'boolean', default: false },
+  fps: { type: 'number', default: 30 },
   micDeviceId: { type: 'string', default: '' },
   cameraDeviceId: { type: 'string', default: '' },
   webcamPosition: { type: 'string', default: 'bottom-right' },
