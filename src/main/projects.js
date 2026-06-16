@@ -3,6 +3,7 @@ import { join, basename } from 'path'
 import { readdir, readFile, writeFile, mkdir, rm, copyFile, rename } from 'fs/promises'
 import { existsSync } from 'fs'
 import { v4 as uuid } from 'uuid'
+import { migrateProjectToV2 } from '../shared/render-model.js'
 
 /**
  * Write a file atomically: write to a temp sibling, then rename into place.
@@ -143,6 +144,27 @@ export async function loadProject(id) {
   }
   if (project.recordings && project.recordings.webcamProxy === undefined) {
     project.recordings.webcamProxy = project.recordings.webcam
+  }
+
+  // ── Schema v2 migration (multi-track timeline) ──
+  // Non-destructive: adds `media` + `timeline` derived from the legacy `edit`,
+  // keeping `edit`/`recordings` intact so existing renderers keep working.
+  // A one-time .v1.bak snapshot is written before persisting the upgrade.
+  if (project.schemaVersion !== 2) {
+    try {
+      const bakPath = join(projectPath, 'project.v1.bak.json')
+      if (!existsSync(bakPath)) {
+        await writeFile(bakPath, JSON.stringify(project, null, 2))
+      }
+      const migrated = migrateProjectToV2(project)
+      await writeFile(join(projectPath, 'project.json'), JSON.stringify(migrated, null, 2))
+      return migrated
+    } catch (err) {
+      // If migration fails, return the v1 project untouched — the app still
+      // works off the legacy fields, and we retry on next load.
+      console.warn(`Schema v2 migration failed for ${id}, staying on v1:`, err.message)
+      return project
+    }
   }
 
   return project

@@ -9,6 +9,7 @@
     "preview": "electron-vite preview",
     "package": "electron-builder",
     "test": "npx playwright test",
+    "test:unit": "node test/render-model.test.mjs",
     "test:screenshots": "npx playwright test screenshots.spec.js",
     "test:home": "npx playwright test home.spec.js",
     "test:editor": "npx playwright test editor.spec.js",
