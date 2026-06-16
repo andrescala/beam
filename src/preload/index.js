@@ -41,6 +41,18 @@ const electronAPI = {
   // SRT export
   exportSrt: (projectId) => ipcRenderer.invoke('export-srt', projectId),
 
+  // WebVTT export
+  exportVtt: (projectId) => ipcRenderer.invoke('export-vtt', projectId),
+
+  // AI copilot (BYO Claude key)
+  aiHasKey: () => ipcRenderer.invoke('ai-has-key'),
+  aiGetKey: () => ipcRenderer.invoke('ai-get-key'),
+  aiSetKey: (key) => ipcRenderer.invoke('ai-set-key', key),
+  aiGenerateMetadata: (args) => ipcRenderer.invoke('ai-generate-metadata', args),
+  aiGenerateChapters: (args) => ipcRenderer.invoke('ai-generate-chapters', args),
+  aiSuggestHighlights: (args) => ipcRenderer.invoke('ai-suggest-highlights', args),
+  aiEditByPrompt: (args) => ipcRenderer.invoke('ai-edit-by-prompt', args),
+
   // Project backup/import
   exportProjectZip: (projectId) => ipcRenderer.invoke('export-project-zip', projectId),
   importProjectZip: () => ipcRenderer.invoke('import-project-zip'),

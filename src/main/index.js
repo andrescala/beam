@@ -15,6 +15,7 @@ import {
   listAssets,
   deleteAsset,
   exportSrt,
+  exportVtt,
   importProjectZip,
   importVideoAsProject
 } from './projects.js'
@@ -22,6 +23,15 @@ import { generateThumbnail, exportMp4, exportGif, extractAudio, detectSilence } 
 import { transcribeAudio, isWhisperAvailable } from './transcribe.js'
 import { getWhisperStatus, downloadModel, ensureWhisperReady, onStatusChange } from './whisper-manager.js'
 import { getPreferences, setPreferences } from './preferences.js'
+import {
+  getClaudeApiKey,
+  setClaudeApiKey,
+  hasClaudeApiKey,
+  generateMetadata,
+  generateChapters,
+  suggestHighlights,
+  editByPrompt
+} from './ai.js'
 
 // Force Chromium to use software H.264 decoding. macOS VideoToolbox
 // occasionally throws -12909 (VTDecompressionOutputCallback) on otherwise
@@ -312,6 +322,53 @@ function registerIpcHandlers() {
     } catch (err) {
       return { error: err.message }
     }
+  })
+
+  // WebVTT export
+  ipcMain.handle('export-vtt', async (_event, projectId) => {
+    try {
+      const outputPath = await exportVtt(projectId)
+      return { path: outputPath }
+    } catch (err) {
+      return { error: err.message }
+    }
+  })
+
+  // AI copilot (BYO Claude key). All handlers are consent-gated: they only run
+  // when the renderer explicitly calls them, and they no-op (NO_API_KEY) when
+  // no key is configured. Transcript text is sent to Anthropic for the request.
+  ipcMain.handle('ai-has-key', async () => {
+    return { hasKey: hasClaudeApiKey() }
+  })
+
+  ipcMain.handle('ai-get-key', async () => {
+    // Return only whether a key exists plus a masked hint — never the raw key.
+    const key = getClaudeApiKey()
+    return { hasKey: !!key, hint: key ? `…${key.slice(-4)}` : '' }
+  })
+
+  ipcMain.handle('ai-set-key', async (_event, key) => {
+    try {
+      return setClaudeApiKey(key)
+    } catch (err) {
+      return { error: err.message }
+    }
+  })
+
+  ipcMain.handle('ai-generate-metadata', async (_event, args) => {
+    return await generateMetadata(args || {})
+  })
+
+  ipcMain.handle('ai-generate-chapters', async (_event, args) => {
+    return await generateChapters(args || {})
+  })
+
+  ipcMain.handle('ai-suggest-highlights', async (_event, args) => {
+    return await suggestHighlights(args || {})
+  })
+
+  ipcMain.handle('ai-edit-by-prompt', async (_event, args) => {
+    return await editByPrompt(args || {})
   })
 
   // Project backup/import

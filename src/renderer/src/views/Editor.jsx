@@ -5,6 +5,7 @@ import Timeline from '../components/Timeline'
 import Inspector from '../components/Inspector'
 import LayerPanel from '../components/LayerPanel'
 import CaptionEditor from '../components/CaptionEditor'
+import TranscriptPanel from '../components/TranscriptPanel'
 import AssetLibrary from '../components/AssetLibrary'
 import ExportModal from '../components/ExportModal'
 import HelpDrawer from '../components/HelpDrawer'
@@ -24,7 +25,7 @@ function Editor() {
   const [playing, setPlaying] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
-  const [bottomTab, setBottomTab] = useState('timeline') // timeline, layers, assets, captions
+  const [bottomTab, setBottomTab] = useState('timeline') // timeline, layers, assets, captions, transcript
   const videoRef = useRef(null)
 
   // Undo/redo history. Kept in refs (not state) so pushes from rapid slider
@@ -306,6 +307,12 @@ function Editor() {
             >
               Captions {(project.edit?.captions?.length || 0) > 0 && `(${project.edit.captions.length})`}
             </button>
+            <button
+              className={`${styles.tabBtn} ${bottomTab === 'transcript' ? styles.tabBtnActive : ''}`}
+              onClick={() => setBottomTab('transcript')}
+            >
+              Transcript {(project.edit?.transcript?.segments?.length || 0) > 0 && `(${project.edit.transcript.segments.length})`}
+            </button>
           </div>
 
           <div className={styles.bottomPanel}>
@@ -341,6 +348,15 @@ function Editor() {
                 project={project}
                 projectId={projectId}
                 currentTime={currentTime}
+                onEditChange={updateEdit}
+              />
+            )}
+            {bottomTab === 'transcript' && (
+              <TranscriptPanel
+                project={project}
+                projectId={projectId}
+                currentTime={currentTime}
+                onSeek={handleSeek}
                 onEditChange={updateEdit}
               />
             )}
