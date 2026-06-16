@@ -53,6 +53,13 @@ const electronAPI = {
   getPreferences: () => ipcRenderer.invoke('get-preferences'),
   setPreferences: (patch) => ipcRenderer.invoke('set-preferences', patch),
 
+  // Storage
+  getProjectsDir: () => ipcRenderer.invoke('get-projects-dir'),
+  getStorageUsage: () => ipcRenderer.invoke('get-storage-usage'),
+
+  // Auto-update
+  checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+
   // Events from main process
   onExportProgress: (callback) => {
     const handler = (_event, progress) => callback(progress)
@@ -78,6 +85,16 @@ const electronAPI = {
     const handler = (_event, percent) => callback(percent)
     ipcRenderer.on('import-progress', handler)
     return () => ipcRenderer.removeListener('import-progress', handler)
+  },
+  onUpdateAvailable: (callback) => {
+    const handler = (_event, info) => callback(info)
+    ipcRenderer.on('update-available', handler)
+    return () => ipcRenderer.removeListener('update-available', handler)
+  },
+  onUpdateDownloaded: (callback) => {
+    const handler = (_event, info) => callback(info)
+    ipcRenderer.on('update-downloaded', handler)
+    return () => ipcRenderer.removeListener('update-downloaded', handler)
   }
 }
 

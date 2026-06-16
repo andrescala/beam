@@ -1,9 +1,10 @@
 import { app, shell, BrowserWindow, ipcMain, desktopCapturer, systemPreferences, dialog, session, protocol, Tray, Menu, globalShortcut, nativeImage } from 'electron'
 import { join } from 'path'
-import { readFile } from 'fs/promises'
+import { readFile, readdir, stat } from 'fs/promises'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import {
   ensureProjectsDir,
+  getProjectsDir,
   getProjectPath,
   createProject,
   loadProject,
@@ -82,6 +83,77 @@ function registerGlobalShortcuts() {
     })
   } catch (err) {
     console.warn('Global shortcut registration failed:', err.message)
+  }
+}
+
+// ── Auto-update (electron-updater) ──
+// Loaded lazily so a missing/broken module never crashes startup.
+let autoUpdater = null
+let autoUpdaterWired = false
+
+async function getAutoUpdater() {
+  if (autoUpdater) return autoUpdater
+  try {
+    const mod = await import('electron-updater')
+    autoUpdater = mod.autoUpdater || mod.default?.autoUpdater || mod.default
+    return autoUpdater
+  } catch (err) {
+    console.warn('electron-updater unavailable:', err.message)
+    return null
+  }
+}
+
+function sendToRenderer(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, payload)
+  }
+}
+
+async function setupAutoUpdater() {
+  // Never run in dev or when not packaged — there is nothing to update against.
+  if (is.dev || !app.isPackaged) return
+  if (autoUpdaterWired) return
+  try {
+    const updater = await getAutoUpdater()
+    if (!updater) return
+
+    try {
+      const prefs = getPreferences()
+      if (prefs.updateChannel) updater.channel = prefs.updateChannel
+    } catch {
+      // Pref access is best-effort
+    }
+
+    updater.autoDownload = true
+    updater.on('update-available', (info) => {
+      sendToRenderer('update-available', { version: info?.version })
+    })
+    updater.on('update-downloaded', (info) => {
+      sendToRenderer('update-downloaded', { version: info?.version })
+    })
+    updater.on('error', (err) => {
+      console.warn('autoUpdater error:', err?.message || err)
+    })
+
+    autoUpdaterWired = true
+  } catch (err) {
+    console.warn('Auto-updater setup failed:', err.message)
+  }
+}
+
+async function triggerUpdateCheck() {
+  if (is.dev || !app.isPackaged) {
+    return { ok: false, reason: 'dev-or-unpackaged' }
+  }
+  try {
+    await setupAutoUpdater()
+    const updater = await getAutoUpdater()
+    if (!updater) return { ok: false, reason: 'unavailable' }
+    await updater.checkForUpdates()
+    return { ok: true }
+  } catch (err) {
+    console.warn('checkForUpdates failed:', err.message)
+    return { ok: false, reason: err.message }
   }
 }
 
@@ -489,6 +561,59 @@ function registerIpcHandlers() {
   ipcMain.handle('set-preferences', async (_event, patch) => {
     return setPreferences(patch)
   })
+
+  // Storage — the absolute path where projects are stored
+  ipcMain.handle('get-projects-dir', async () => {
+    return getProjectsDir()
+  })
+
+  // Storage — total bytes used by all project folders
+  ipcMain.handle('get-storage-usage', async () => {
+    try {
+      const dir = getProjectsDir()
+      const entries = await readdir(dir, { withFileTypes: true })
+      let total = 0
+      let count = 0
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue
+        total += await dirSize(join(dir, entry.name))
+        count += 1
+      }
+      return { bytes: total, projectCount: count }
+    } catch (err) {
+      return { bytes: 0, projectCount: 0, error: err.message }
+    }
+  })
+
+  // Auto-update — manual check trigger (no-op in dev / unpackaged)
+  ipcMain.handle('check-for-updates', async () => {
+    return await triggerUpdateCheck()
+  })
+}
+
+// Recursively sum the size of every file under a directory.
+async function dirSize(dirPath) {
+  let total = 0
+  let entries
+  try {
+    entries = await readdir(dirPath, { withFileTypes: true })
+  } catch {
+    return 0
+  }
+  for (const entry of entries) {
+    const full = join(dirPath, entry.name)
+    try {
+      if (entry.isDirectory()) {
+        total += await dirSize(full)
+      } else if (entry.isFile()) {
+        const s = await stat(full)
+        total += s.size
+      }
+    } catch {
+      // Skip unreadable entries
+    }
+  }
+  return total
 }
 
 async function collectFilesForArchive(basePath, currentPath, files, rf, rd) {
@@ -608,6 +733,11 @@ if (!gotTheLock) {
     createWindow()
     createTray()
     registerGlobalShortcuts()
+
+    // Check for updates once on launch (guarded: no-ops in dev / unpackaged).
+    triggerUpdateCheck().catch((err) => {
+      console.warn('Initial update check failed:', err.message)
+    })
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
