@@ -10,6 +10,10 @@ const schema = {
   webcamPosition: { type: 'string', default: 'bottom-right' },
   webcamShape: { type: 'string', default: 'circle' },
   countdownDuration: { type: 'number', default: 3 },
+  normalizeLoudness: { type: 'boolean', default: false },
+  claudeApiKey: { type: 'string', default: '' },
+  updateChannel: { type: 'string', default: 'latest' },
+  theme: { type: 'string', default: 'dark' },
   windowBounds: {
     type: 'object',
     default: { width: 1200, height: 800 }
