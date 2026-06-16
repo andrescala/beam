@@ -9,6 +9,31 @@ const RENDITIONS = [
   { key: 'x', label: 'X / LinkedIn', desc: '1280×720 · 16:9', targetWidth: 1280, targetHeight: 720 }
 ]
 
+// All selectable export formats.
+//   • video: runs the full rendition queue (renditions, quality, resolution).
+//   • single: one export pass, no renditions.
+//   • hwAccel: offers the hardware-encoding toggle (H.264 / HEVC).
+//   • audioOnly: strips video.
+const FORMATS = [
+  { key: 'mp4', icon: '\u{1F3AC}', label: 'MP4', desc: 'H.264 video', kind: 'video', hwAccel: true },
+  { key: 'hevc', icon: '\u{1F3AC}', label: 'HEVC', desc: 'H.265 video', kind: 'video', hwAccel: true },
+  { key: 'webm', icon: '\u{1F3AC}', label: 'WebM', desc: 'VP9 + Opus', kind: 'video' },
+  { key: 'gif', icon: '\u{1F5BC}', label: 'GIF', desc: 'Animated image', kind: 'single' },
+  { key: 'mp3', icon: '\u{1F50A}', label: 'MP3', desc: 'Audio only', kind: 'single', audioOnly: true },
+  { key: 'm4a', icon: '\u{1F50A}', label: 'M4A', desc: 'Audio only (AAC)', kind: 'single', audioOnly: true },
+  { key: 'png', icon: '\u{1F5BC}', label: 'PNG', desc: 'Single frame', kind: 'single' }
+]
+
+const FORMAT_SUMMARY = {
+  mp4: 'MP4 (H.264)',
+  hevc: 'MP4 (H.265 / HEVC)',
+  webm: 'WebM (VP9 + Opus)',
+  gif: 'GIF (640px, 15fps)',
+  mp3: 'MP3 audio',
+  m4a: 'M4A audio (AAC)',
+  png: 'PNG frame'
+}
+
 function ExportModal({ project, onClose }) {
   const [phase, setPhase] = useState('config') // config | running | done
   const [error, setError] = useState(null)
@@ -16,6 +41,7 @@ function ExportModal({ project, onClose }) {
   const [quality, setQuality] = useState('balanced')
   const [resolution, setResolution] = useState('source')
   const [normalizeLoudness, setNormalizeLoudness] = useState(false)
+  const [hardwareAccel, setHardwareAccel] = useState(false)
   const [fillMode, setFillMode] = useState('blur')
   const [selectedKeys, setSelectedKeys] = useState(() => new Set(['original']))
   const [jobs, setJobs] = useState([])
@@ -42,24 +68,29 @@ function ExportModal({ project, onClose }) {
 
   const selectedRenditions = RENDITIONS.filter((r) => selectedKeys.has(r.key))
   const anyReframe = selectedRenditions.some((r) => r.targetWidth)
+  const currentFormat = FORMATS.find((f) => f.key === format) || FORMATS[0]
+  const isVideoFormat = currentFormat.kind === 'video'
 
   async function handleExport() {
     setError(null)
 
-    if (format === 'gif') {
-      const gifJob = { key: 'gif', label: 'GIF', status: 'running', progress: 0 }
-      setJobs([gifJob])
+    // Single-pass formats (gif, png, mp3, m4a): one export, no rendition queue.
+    if (!isVideoFormat) {
+      const job = { key: format, label: currentFormat.label, status: 'running', progress: 0 }
+      setJobs([job])
       setPhase('running')
-      activeJobRef.current = 'gif'
+      activeJobRef.current = format
       try {
-        const result = await window.electronAPI.processRecording(project.id, 'gif')
+        const result = await window.electronAPI.processRecording(project.id, format, {
+          quality
+        })
         if (result.error) {
-          setJobs([{ ...gifJob, status: 'failed', error: result.error }])
+          setJobs([{ ...job, status: 'failed', error: result.error }])
           setError(result.error)
           setPhase('done')
           return
         }
-        setJobs([{ ...gifJob, status: 'done', progress: 100 }])
+        setJobs([{ ...job, status: 'done', progress: 100 }])
         setExportPaths([result.path])
         setPhase('done')
       } catch (err) {
@@ -93,9 +124,11 @@ function ExportModal({ project, onClose }) {
       activeJobRef.current = r.key
       setJobs((prev) => prev.map((j) => (j.key === r.key ? { ...j, status: 'running' } : j)))
       try {
-        const result = await window.electronAPI.processRecording(project.id, 'mp4', {
+        const result = await window.electronAPI.processRecording(project.id, format, {
           quality,
           normalizeLoudness,
+          // Hardware encoding only applies to the H.264/HEVC encoders.
+          hardwareAccel: currentFormat.hwAccel ? hardwareAccel : false,
           fillMode,
           label: r.key === 'original' ? '' : r.key,
           targetWidth: r.targetWidth,
@@ -165,26 +198,21 @@ function ExportModal({ project, onClose }) {
           {phase === 'config' && (
             <>
               {/* Format selector */}
-              <div className={styles.formatRow}>
-                <button
-                  className={`${styles.formatBtn} ${format === 'mp4' ? styles.formatBtnActive : ''}`}
-                  onClick={() => setFormat('mp4')}
-                >
-                  <span className={styles.formatIcon}>&#x1F3AC;</span>
-                  <span>MP4</span>
-                  <span className={styles.formatDesc}>H.264 video</span>
-                </button>
-                <button
-                  className={`${styles.formatBtn} ${format === 'gif' ? styles.formatBtnActive : ''}`}
-                  onClick={() => setFormat('gif')}
-                >
-                  <span className={styles.formatIcon}>&#x1F5BC;</span>
-                  <span>GIF</span>
-                  <span className={styles.formatDesc}>Animated image</span>
-                </button>
+              <div className={styles.formatGrid}>
+                {FORMATS.map((f) => (
+                  <button
+                    key={f.key}
+                    className={`${styles.formatBtn} ${format === f.key ? styles.formatBtnActive : ''}`}
+                    onClick={() => setFormat(f.key)}
+                  >
+                    <span className={styles.formatIcon}>{f.icon}</span>
+                    <span>{f.label}</span>
+                    <span className={styles.formatDesc}>{f.desc}</span>
+                  </button>
+                ))}
               </div>
 
-              {format === 'mp4' && (
+              {isVideoFormat && (
                 <>
                   {/* Rendition multi-select — one edit, many channel sizes */}
                   <div className={styles.renditionBlock}>
@@ -258,6 +286,18 @@ function ExportModal({ project, onClose }) {
                         <span>Normalize loudness (−14 LUFS, social/YouTube)</span>
                       </label>
                     </div>
+                    {currentFormat.hwAccel && (
+                      <div className={styles.optionRow}>
+                        <label className={styles.optionCheck}>
+                          <input
+                            type="checkbox"
+                            checked={hardwareAccel}
+                            onChange={(e) => setHardwareAccel(e.target.checked)}
+                          />
+                          <span>Hardware acceleration (falls back to software if unavailable)</span>
+                        </label>
+                      </div>
+                    )}
                   </div>
                 </>
               )}
@@ -265,7 +305,7 @@ function ExportModal({ project, onClose }) {
               <div className={styles.info}>
                 <div className={styles.row}>
                   <span>Format</span>
-                  <span>{format === 'mp4' ? 'MP4 (H.264)' : 'GIF (640px, 15fps)'}</span>
+                  <span>{FORMAT_SUMMARY[format] || format}</span>
                 </div>
                 <div className={styles.row}>
                   <span>Duration</span>
@@ -286,18 +326,27 @@ function ExportModal({ project, onClose }) {
                 {format === 'gif' && (
                   <div className={styles.gifNote}>
                     GIF files can be large for long recordings. Best for clips under 15 seconds.
-                    GIF export includes trim, cuts, speed, and crop only. Webcam, text, image overlays,
-                    and effects (blur, vignette, zoom, title cards) are not included in GIF output.
+                    GIF export includes all overlays and effects.
+                  </div>
+                )}
+                {currentFormat.audioOnly && (
+                  <div className={styles.gifNote}>
+                    Audio-only export — video and visual overlays are stripped.
+                  </div>
+                )}
+                {format === 'png' && (
+                  <div className={styles.gifNote}>
+                    Captures a single frame (PNG) at the last position of the edited clip.
                   </div>
                 )}
               </div>
               {error && <div className={styles.error}><p>{error}</p></div>}
               <button className={styles.exportBtn} onClick={handleExport}>
-                {format === 'gif'
-                  ? 'Export GIF'
+                {!isVideoFormat
+                  ? `Export ${currentFormat.label}`
                   : selectedRenditions.length > 1
                     ? `Export ${selectedRenditions.length} renditions`
-                    : 'Export MP4'}
+                    : `Export ${currentFormat.label}`}
               </button>
             </>
           )}

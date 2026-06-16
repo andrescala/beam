@@ -174,7 +174,144 @@ export function remuxWebm(inputPath, outputPath, opts = {}) {
 
 const CRF_BY_QUALITY = { high: 18, balanced: 23, small: 28 }
 
+// Per-quality average bitrate targets used for hardware H.264/HEVC encoders,
+// which don't honour libx264's CRF. Roughly matched to the CRF tiers for a
+// typical 1080p screencast.
+const HW_BITRATE_BY_QUALITY = { high: '12M', balanced: '8M', small: '5M' }
+// VP9 uses CRF too, but on a different scale than x264; map to comparable
+// perceptual tiers.
+const VP9_CRF_BY_QUALITY = { high: 24, balanced: 31, small: 37 }
+
+// Cache of encoder-name -> boolean availability. Probing spawns a tiny FFmpeg
+// job, so we only ever do it once per encoder per process.
+const encoderProbeCache = new Map()
+
+/**
+ * Probe whether a given video encoder actually works in this FFmpeg build /
+ * on this machine. Runs a sub-0.1s nullsrc encode and resolves true only if
+ * FFmpeg exits cleanly. Any error (encoder missing, hardware unavailable,
+ * driver fault) resolves false so the caller can fall back to software.
+ *
+ * Conservative by design: this codebase has a history of macOS VideoToolbox
+ * DECODE faults (-12909). Encode is generally safe, but we still verify the
+ * encoder before trusting it for a real export. Results are cached per process.
+ */
+export function probeEncoder(encoder) {
+  if (encoderProbeCache.has(encoder)) {
+    return Promise.resolve(encoderProbeCache.get(encoder))
+  }
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (ok) => {
+      if (settled) return
+      settled = true
+      encoderProbeCache.set(encoder, ok)
+      resolve(ok)
+    }
+    try {
+      ffmpeg()
+        .input('nullsrc=s=256x256:r=30')
+        .inputOptions(['-f', 'lavfi', '-t', '0.1'])
+        .outputOptions(['-c:v', encoder, '-f', 'null'])
+        .output('-')
+        .on('end', () => finish(true))
+        .on('error', () => finish(false))
+        .run()
+    } catch {
+      finish(false)
+    }
+  })
+}
+
+/**
+ * Pick a hardware H.264 encoder, probing candidates in platform-preferred
+ * order. Returns the encoder name, or null if none are usable.
+ */
+async function pickHardwareH264() {
+  const candidates =
+    process.platform === 'darwin'
+      ? ['h264_videotoolbox', 'h264_nvenc', 'h264_qsv']
+      : ['h264_nvenc', 'h264_qsv']
+  for (const enc of candidates) {
+    // eslint-disable-next-line no-await-in-loop
+    if (await probeEncoder(enc)) return enc
+  }
+  return null
+}
+
+/**
+ * Resolve the H.264 video-encoder output options, honouring the hardwareAccel
+ * opt-in with automatic fallback to libx264. Returns an array of outputOptions
+ * tokens (encoder + quality control + pixel format).
+ */
+async function buildH264VideoOptions(options, crf, quality) {
+  if (options.hardwareAccel) {
+    const hwEnc = await pickHardwareH264()
+    if (hwEnc) {
+      const bitrate = HW_BITRATE_BY_QUALITY[quality] || HW_BITRATE_BY_QUALITY.balanced
+      const opts = ['-c:v', hwEnc, '-b:v', bitrate]
+      // nvenc honours -cq; qsv uses -global_quality. videotoolbox relies on the
+      // bitrate ceiling alone. These are best-effort and ignored if unknown.
+      if (hwEnc === 'h264_nvenc') opts.push('-cq', String(crf), '-preset', 'p5')
+      else if (hwEnc === 'h264_qsv') opts.push('-global_quality', String(crf))
+      opts.push('-pix_fmt', 'yuv420p')
+      return opts
+    }
+    console.warn('[export] hardwareAccel requested but no hardware H.264 encoder available; using libx264')
+  }
+  return ['-c:v', 'libx264', '-preset', 'medium', '-crf', String(crf), '-pix_fmt', 'yuv420p']
+}
+
+/**
+ * Resolve HEVC/H.265 video options, preferring hardware when opted in, with
+ * automatic fallback to libx265.
+ */
+async function buildHevcVideoOptions(options, crf, quality) {
+  if (options.hardwareAccel) {
+    const hwEnc =
+      process.platform === 'darwin' && (await probeEncoder('hevc_videotoolbox'))
+        ? 'hevc_videotoolbox'
+        : (await probeEncoder('hevc_nvenc'))
+          ? 'hevc_nvenc'
+          : null
+    if (hwEnc) {
+      const bitrate = HW_BITRATE_BY_QUALITY[quality] || HW_BITRATE_BY_QUALITY.balanced
+      const opts = ['-c:v', hwEnc, '-b:v', bitrate, '-tag:v', 'hvc1', '-pix_fmt', 'yuv420p']
+      if (hwEnc === 'hevc_nvenc') opts.splice(4, 0, '-cq', String(crf))
+      return opts
+    }
+    console.warn('[export] hardwareAccel requested but no hardware HEVC encoder available; using libx265')
+  }
+  // libx265 reuses the libx264 CRF scale closely enough for our tiers.
+  return ['-c:v', 'libx265', '-preset', 'medium', '-crf', String(crf), '-tag:v', 'hvc1', '-pix_fmt', 'yuv420p']
+}
+
+// Supported export formats and their file extensions. Audio-only formats skip
+// the video graph; PNG grabs a single frame and skips audio.
+const FORMAT_EXT = {
+  mp4: 'mp4',
+  hevc: 'mp4',
+  webm: 'webm',
+  gif: 'gif',
+  mp3: 'mp3',
+  m4a: 'm4a',
+  png: 'png'
+}
+const AUDIO_ONLY_FORMATS = new Set(['mp3', 'm4a'])
+
 export async function exportMp4(projectPath, project, onProgress, options = {}) {
+  return runExport(projectPath, project, onProgress, { ...options, format: options.format || 'mp4' })
+}
+
+/**
+ * Unified export pipeline. Builds the SAME full video/audio filter graph for
+ * every visual format (mp4, hevc, webm, gif, png) and the audio half for
+ * audio-only formats (mp3, m4a). The output stage then adapts codecs / mapping
+ * per format. GIF reuses the full graph and appends fps+scale+palettegen/
+ * paletteuse as a 2-pass step, so it now includes all overlays/effects.
+ */
+async function runExport(projectPath, project, onProgress, options = {}) {
+  const format = options.format || 'mp4'
   const screenPath = join(projectPath, project.recordings.screen)
   if (!existsSync(screenPath)) {
     throw new Error('Screen recording not found')
@@ -219,7 +356,11 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
   await mkdir(outputDir, { recursive: true })
   const timestamp = Date.now()
   const safeLabel = (options.label || '').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '')
-  const outputPath = join(outputDir, `export${safeLabel ? `-${safeLabel}` : ''}-${timestamp}.mp4`)
+  const ext = FORMAT_EXT[format] || 'mp4'
+  const outputPath = join(outputDir, `export${safeLabel ? `-${safeLabel}` : ''}-${timestamp}.${ext}`)
+  const isAudioOnly = AUDIO_ONLY_FORMATS.has(format)
+  const isGif = format === 'gif'
+  const isPng = format === 'png'
 
   const webcamPath = project.recordings?.webcam
     ? join(projectPath, project.recordings.webcam)
@@ -278,6 +419,16 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
       }
       audioAssetInputs.push({ layer, path: assetPath, assetDuration })
     }
+  }
+
+  // Resolve the video-encoder options up front (encoder probing is async and
+  // can't run inside the Promise executor below). Only the H.264/HEVC paths
+  // need this; other formats use fixed codecs.
+  let videoCodecOptions = null
+  if (format === 'hevc') {
+    videoCodecOptions = await buildHevcVideoOptions(options, crf, options.quality)
+  } else if (format === 'mp4') {
+    videoCodecOptions = await buildH264VideoOptions(options, crf, options.quality)
   }
 
   return new Promise((resolve, reject) => {
@@ -351,27 +502,34 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
     let videoOut, audioOut
 
     // ── Step 1: Trim/cut screen video ──
-    if (hasCuts) {
-      const vParts = []
-      keepSegments.forEach((seg, i) => {
-        filters.push(`[0:v]trim=start=${seg.start}:end=${seg.end},setpts=PTS-STARTPTS[sv${i}]`)
-        vParts.push(`[sv${i}]`)
-      })
+    // Skipped entirely for audio-only formats (mp3/m4a) — no video graph is
+    // built so no dangling filter outputs exist to map.
+    if (!isAudioOnly) {
+      if (hasCuts) {
+        const vParts = []
+        keepSegments.forEach((seg, i) => {
+          filters.push(`[0:v]trim=start=${seg.start}:end=${seg.end},setpts=PTS-STARTPTS[sv${i}]`)
+          vParts.push(`[sv${i}]`)
+        })
 
-      if (keepSegments.length > 1) {
-        filters.push(`${vParts.join('')}concat=n=${keepSegments.length}:v=1:a=0[sv_concat]`)
-        videoOut = 'sv_concat'
+        if (keepSegments.length > 1) {
+          filters.push(`${vParts.join('')}concat=n=${keepSegments.length}:v=1:a=0[sv_concat]`)
+          videoOut = 'sv_concat'
+        } else {
+          videoOut = 'sv0'
+        }
       } else {
-        videoOut = 'sv0'
+        filters.push(`[0:v]trim=start=${trimStart}:end=${trimEnd},setpts=PTS-STARTPTS[sv_trim]`)
+        videoOut = 'sv_trim'
       }
-    } else {
-      filters.push(`[0:v]trim=start=${trimStart}:end=${trimEnd},setpts=PTS-STARTPTS[sv_trim]`)
-      videoOut = 'sv_trim'
     }
 
     // ── Step 1b: Trim/cut each recording-audio source the same way ──
+    // PNG (single still frame) and GIF (silent animation) carry no audio, so
+    // skip every audio step — an unmapped audio output would otherwise dangle.
+    const needsAudio = !isPng && !isGif
     const recAudioOuts = []
-    recordingAudio.forEach((src, s) => {
+    if (needsAudio) recordingAudio.forEach((src, s) => {
       // FFT-based background-noise reduction on the mic. Applied ONCE to the
       // whole source before any cut/trim split, so the denoiser trains its
       // noise estimate on a continuous stream (applying it per-segment would
@@ -405,7 +563,7 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
 
     // If no audio source at all, generate a silent track so the output MP4
     // is well-formed.
-    if (recordingAudio.length === 0) {
+    if (needsAudio && recordingAudio.length === 0) {
       const silenceDuration = computeOutputDuration(keepSegments)
       filters.push(`aevalsrc=0:d=${silenceDuration}[sa_silence]`)
       audioOut = 'sa_silence'
@@ -413,14 +571,16 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
 
     // ── Step 2: Speed ──
     if (hasSpeed) {
-      filters.push(`[${videoOut}]setpts=PTS/${speed}[sv_speed]`)
-      videoOut = 'sv_speed'
+      if (!isAudioOnly) {
+        filters.push(`[${videoOut}]setpts=PTS/${speed}[sv_speed]`)
+        videoOut = 'sv_speed'
+      }
       const tempoFilters = buildTempoChain(speed)
       recAudioOuts.forEach((label, s) => {
         filters.push(`[${label}]${tempoFilters}[sa${s}_speed]`)
         recAudioOuts[s] = `sa${s}_speed`
       })
-      if (recordingAudio.length === 0) {
+      if (needsAudio && recordingAudio.length === 0) {
         filters.push(`[${audioOut}]${tempoFilters}[sa_speed]`)
         audioOut = 'sa_speed'
       }
@@ -447,7 +607,7 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
     }
 
     // ── Step 3: Crop ──
-    if (hasCrop) {
+    if (!isAudioOnly && hasCrop) {
       const cropW = Math.round(screenInfo.width * crop.width)
       const cropH = Math.round(screenInfo.height * crop.height)
       const cropX = Math.round(screenInfo.width * crop.x)
@@ -460,7 +620,7 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
     }
 
     // ── Step 3b: Background blur ──
-    if (backgroundBlur && backgroundBlur.enabled) {
+    if (!isAudioOnly && backgroundBlur && backgroundBlur.enabled) {
       const blurStrength = backgroundBlur.strength || 10
       // Apply box blur (luma + chroma)
       filters.push(`[${videoOut}]boxblur=${blurStrength}:${blurStrength}[sv_blur]`)
@@ -468,7 +628,7 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
     }
 
     // ── Step 3c: Cursor spotlight (vignette) ──
-    if (cursorSpotlight && cursorSpotlight.enabled) {
+    if (!isAudioOnly && cursorSpotlight && cursorSpotlight.enabled) {
       const intensity = cursorSpotlight.intensity || 0.4
       // vignette: angle is PI/2 * intensity, larger = more darkening at edges
       const angle = `PI/2*${intensity}`
@@ -477,7 +637,7 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
     }
 
     // ── Step 3d: Zoom keyframes ──
-    if (zoomKeyframes.length > 0) {
+    if (!isAudioOnly && zoomKeyframes.length > 0) {
       // Apply zoom using zoompan filter
       // Each keyframe: { time, x, y, zoom, duration }
       // Build a zoompan expression that interpolates between keyframes
@@ -531,7 +691,7 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
     }
 
     // ── Step 4: Webcam overlay ──
-    if (hasWebcam) {
+    if (!isAudioOnly && hasWebcam) {
       const size = edit.webcamSize || 0.2
       const pos = edit.webcamPosition || 'bottom-right'
       const shape = edit.webcamShape || 'circle'
@@ -576,7 +736,7 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
     }
 
     // ── Step 5: Image overlays ──
-    for (let i = 0; i < imageAssetInputs.length; i++) {
+    for (let i = 0; !isAudioOnly && i < imageAssetInputs.length; i++) {
       const { layer } = imageAssetInputs[i]
       const inputIdx = imageInputMap[i]
 
@@ -606,7 +766,7 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
       ...captions.map((c) => ({ ...c, type: 'caption', x: 0.5, y: 0.9, fontSize: c.fontSize || 20, color: c.color || '#ffffff', background: c.background || 'black@0.5' }))
     ]
 
-    for (let i = 0; i < allTextItems.length; i++) {
+    for (let i = 0; !isAudioOnly && i < allTextItems.length; i++) {
       const item = allTextItems[i]
       const outStart = mapTimeToOutput(item.startTime || 0, keepSegments) / speed
       const outEnd = item.endTime != null ? mapTimeToOutput(item.endTime, keepSegments) / speed : outputDuration
@@ -641,7 +801,7 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
     // ── Step 7: Audio mixing ──
     // Recording-audio volumes were applied in Step 2b; here we mix in any
     // imported audio layers (music, SFX).
-    if (audioAssetInputs.length > 0) {
+    if (needsAudio && audioAssetInputs.length > 0) {
       // Auto-ducking: layers marked duckUnderVoice are sidechain-compressed
       // against the recording audio (the "voice"), so music drops whenever
       // someone speaks. Each ducked layer needs its own copy of the voice
@@ -707,7 +867,7 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
     let fw = refWidth2 % 2 === 0 ? refWidth2 : refWidth2 - 1
     let fh = refHeight2 % 2 === 0 ? refHeight2 : refHeight2 - 1
 
-    if (targetWidth && targetHeight) {
+    if (!isAudioOnly && targetWidth && targetHeight) {
       // Social preset: exact WxH output. Same aspect → plain scale; aspect
       // change → blur-fill (video fit inside a blurred copy of itself) or
       // center-crop to fill, per fillMode.
@@ -736,7 +896,7 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
 
     // Proportional height cap (resolution dropdown) — composes on top of any
     // social reframe above.
-    if (capHeight && capHeight < fh) {
+    if (!isAudioOnly && capHeight && capHeight < fh) {
       const scaledW = Math.round(fw * (capHeight / fh))
       fw = scaledW % 2 === 0 ? scaledW : scaledW - 1
       fh = capHeight % 2 === 0 ? capHeight : capHeight - 1
@@ -749,14 +909,14 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
     // concatenated around it — otherwise loudnorm's measurement window
     // includes the leading/trailing silent cards and skews the gain,
     // producing an audible level ramp at the start of real content.
-    if (normalizeLoudness) {
+    if (needsAudio && normalizeLoudness) {
       filters.push(`[${audioOut}]loudnorm=I=-14:TP=-1.5:LRA=11[a_norm]`)
       audioOut = 'a_norm'
     }
 
     // ── Step 8: Intro/outro title cards ──
-
-    if (introCard || outroCard) {
+    // Visual-only — skipped for audio-only formats.
+    if (!isAudioOnly && (introCard || outroCard)) {
       // Ensure main content dimensions match title cards for concat
       filters.push(`[${videoOut}]scale=${fw}:${fh}:force_original_aspect_ratio=disable[v_scaled]`)
       videoOut = 'v_scaled'
@@ -841,18 +1001,68 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
       audioOut = 'a_final'
     }
 
+    // ── Step 9: Per-format output adaptation ──
+    // The filter graph above produced the final `videoOut` / `audioOut` labels
+    // (the full overlay/effect chain for visual formats, just the audio half
+    // for audio-only). Now we tailor the mapping + codecs to the target format.
+    const outputOptions = []
+
+    if (isAudioOnly) {
+      // Strip video entirely — map only the audio output.
+      outputOptions.push(`-map [${audioOut}]`)
+      if (format === 'mp3') {
+        const abr = options.quality === 'high' ? '256k' : options.quality === 'small' ? '128k' : '192k'
+        outputOptions.push('-c:a', 'libmp3lame', '-b:a', abr)
+      } else {
+        // m4a → AAC
+        const abr = options.quality === 'high' ? '256k' : options.quality === 'small' ? '128k' : '192k'
+        outputOptions.push('-c:a', 'aac', '-b:a', abr, '-movflags', '+faststart')
+      }
+    } else if (isPng) {
+      // Single PNG frame grab at the requested output-time (default: the last
+      // position). Seek within the produced stream, then emit exactly one frame.
+      const grabTime = options.pngTime != null
+        ? Math.max(0, options.pngTime)
+        : Math.max(0, outputDuration - 0.1)
+      filters.push(`[${videoOut}]trim=start=${grabTime.toFixed(3)},setpts=PTS-STARTPTS[v_png]`)
+      videoOut = 'v_png'
+      outputOptions.push(`-map [${videoOut}]`, '-frames:v', '1')
+    } else if (isGif) {
+      // GIF reuses the full visual graph (overlays/effects included), then adds
+      // the standard fps+scale and a high-quality palette. split→palettegen→
+      // paletteuse performs the 2-pass palette technique in a single command:
+      // palettegen sees the whole downscaled stream, so colours stay accurate.
+      filters.push(`[${videoOut}]fps=15,scale=640:-2:flags=lanczos,split[gif_a][gif_b]`)
+      filters.push(`[gif_a]palettegen=stats_mode=diff[gif_pal]`)
+      filters.push(`[gif_b][gif_pal]paletteuse=dither=bayer:bayer_scale=5[gifout]`)
+      videoOut = 'gifout'
+      outputOptions.push(`-map [${videoOut}]`, '-loop', '0')
+    } else if (format === 'webm') {
+      // WebM: VP9 video + Opus audio.
+      const vp9crf = VP9_CRF_BY_QUALITY[options.quality] || VP9_CRF_BY_QUALITY.balanced
+      outputOptions.push(
+        `-map [${videoOut}]`,
+        `-map [${audioOut}]`,
+        '-c:v', 'libvpx-vp9',
+        '-crf', String(vp9crf),
+        '-b:v', '0',
+        '-row-mt', '1',
+        '-pix_fmt', 'yuv420p',
+        '-c:a', 'libopus',
+        '-b:a', '128k'
+      )
+    } else if (format === 'hevc') {
+      outputOptions.push(`-map [${videoOut}]`, `-map [${audioOut}]`, ...videoCodecOptions,
+        '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart')
+    } else {
+      // mp4 (H.264) — default. Encoder is hardware-accelerated when opted in,
+      // with automatic libx264 fallback (resolved into videoCodecOptions above).
+      outputOptions.push(`-map [${videoOut}]`, `-map [${audioOut}]`, ...videoCodecOptions,
+        '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart')
+    }
+
     command = command.complexFilter(filters.join(';'))
-    command = command.outputOptions([
-      `-map [${videoOut}]`,
-      `-map [${audioOut}]`,
-      '-c:v libx264',
-      '-preset medium',
-      `-crf ${crf}`,
-      '-c:a aac',
-      '-b:a 128k',
-      '-movflags +faststart',
-      '-pix_fmt yuv420p'
-    ])
+    command = command.outputOptions(outputOptions)
 
     command
       .output(outputPath)
@@ -877,133 +1087,15 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
   })
 }
 
-export async function exportGif(projectPath, project, onProgress) {
-  const screenPath = join(projectPath, project.recordings.screen)
-  if (!existsSync(screenPath)) {
-    throw new Error('Screen recording not found')
-  }
-
-  const edit = project.edit || {}
-  const trimStart = edit.trimStart || 0
-  const trimEnd = edit.trimEnd || project.duration || 0
-  const speed = edit.speed || 1.0
-  const cuts = edit.cuts || []
-  const crop = edit.crop || {}
-  const hasCrop = crop.enabled && crop.aspectRatio !== 'original'
-
-  const screenInfo = await probeVideo(screenPath)
-
-  const outputDir = join(projectPath, 'exports')
-  await mkdir(outputDir, { recursive: true })
-  const timestamp = Date.now()
-  const palettePath = join(outputDir, `palette-${timestamp}.png`)
-  const outputPath = join(outputDir, `export-${timestamp}.gif`)
-
-  const keepSegments = computeKeepSegments(trimStart, trimEnd, cuts)
-  if (keepSegments.length === 0) {
-    throw new Error('Nothing to export — all content has been cut')
-  }
-
-  return new Promise((resolve, reject) => {
-    // Pass 1: Generate palette
-    let cmd1 = ffmpeg().input(screenPath)
-    const filters1 = []
-    let videoLabel
-
-    if (keepSegments.length > 1) {
-      keepSegments.forEach((seg, i) => {
-        filters1.push(`[0:v]trim=start=${seg.start}:end=${seg.end},setpts=PTS-STARTPTS[gs${i}]`)
-      })
-      filters1.push(`${keepSegments.map((_, i) => `[gs${i}]`).join('')}concat=n=${keepSegments.length}:v=1:a=0[gconcat]`)
-      videoLabel = 'gconcat'
-    } else {
-      filters1.push(`[0:v]trim=start=${trimStart}:end=${trimEnd},setpts=PTS-STARTPTS[gtrim]`)
-      videoLabel = 'gtrim'
-    }
-
-    if (speed !== 1.0) {
-      filters1.push(`[${videoLabel}]setpts=PTS/${speed}[gspeed]`)
-      videoLabel = 'gspeed'
-    }
-
-    if (hasCrop) {
-      const cw = Math.round(screenInfo.width * crop.width)
-      const ch = Math.round(screenInfo.height * crop.height)
-      const cx = Math.round(screenInfo.width * crop.x)
-      const cy = Math.round(screenInfo.height * crop.y)
-      filters1.push(`[${videoLabel}]crop=${cw - cw % 2}:${ch - ch % 2}:${cx}:${cy}[gcrop]`)
-      videoLabel = 'gcrop'
-    }
-
-    filters1.push(`[${videoLabel}]fps=15,scale=640:-2:flags=lanczos[gscaled]`)
-    filters1.push(`[gscaled]palettegen=stats_mode=diff[pal]`)
-
-    cmd1 = cmd1.complexFilter(filters1.join(';'))
-      .outputOptions(['-map [pal]'])
-      .output(palettePath)
-
-    cmd1.on('start', (c) => console.log('GIF pass 1:', c))
-      .on('error', (err) => reject(err))
-      .on('end', () => {
-        if (onProgress) onProgress(50)
-
-        // Pass 2: Generate GIF using palette
-        let cmd2 = ffmpeg().input(screenPath).input(palettePath)
-        const filters2 = []
-        let vLabel2
-
-        if (keepSegments.length > 1) {
-          keepSegments.forEach((seg, i) => {
-            filters2.push(`[0:v]trim=start=${seg.start}:end=${seg.end},setpts=PTS-STARTPTS[gs2_${i}]`)
-          })
-          filters2.push(`${keepSegments.map((_, i) => `[gs2_${i}]`).join('')}concat=n=${keepSegments.length}:v=1:a=0[gconcat2]`)
-          vLabel2 = 'gconcat2'
-        } else {
-          filters2.push(`[0:v]trim=start=${trimStart}:end=${trimEnd},setpts=PTS-STARTPTS[gtrim2]`)
-          vLabel2 = 'gtrim2'
-        }
-
-        if (speed !== 1.0) {
-          filters2.push(`[${vLabel2}]setpts=PTS/${speed}[gspeed2]`)
-          vLabel2 = 'gspeed2'
-        }
-
-        if (hasCrop) {
-          const cw = Math.round(screenInfo.width * crop.width)
-          const ch = Math.round(screenInfo.height * crop.height)
-          const cx = Math.round(screenInfo.width * crop.x)
-          const cy = Math.round(screenInfo.height * crop.y)
-          filters2.push(`[${vLabel2}]crop=${cw - cw % 2}:${ch - ch % 2}:${cx}:${cy}[gcrop2]`)
-          vLabel2 = 'gcrop2'
-        }
-
-        filters2.push(`[${vLabel2}]fps=15,scale=640:-2:flags=lanczos[gscaled2]`)
-        filters2.push(`[gscaled2][1:v]paletteuse=dither=bayer:bayer_scale=5[gifout]`)
-
-        cmd2 = cmd2.complexFilter(filters2.join(';'))
-          .outputOptions(['-map [gifout]', '-loop 0'])
-          .output(outputPath)
-
-        cmd2.on('start', (c) => console.log('GIF pass 2:', c))
-          .on('progress', (p) => {
-            if (onProgress && p.percent) {
-              onProgress(50 + Math.min(50, Math.round(p.percent / 2)))
-            }
-          })
-          .on('end', () => {
-            console.log('GIF export complete:', outputPath)
-            try { unlinkSync(palettePath) } catch (e) { console.warn('Failed to clean up palette:', e.message) }
-            resolve(outputPath)
-          })
-          .on('error', (err, stdout, stderr) => {
-            console.error('GIF error:', err.message)
-            if (stderr) console.error('GIF stderr:', stderr)
-            reject(err)
-          })
-          .run()
-      })
-      .run()
-  })
+/**
+ * GIF export now runs through the unified pipeline (runExport) so it includes
+ * the full visual filter graph — webcam, text/image overlays, blur, vignette,
+ * zoom and title cards — instead of the old reduced trim/cut/speed/crop-only
+ * pass. The fps+scale and 2-pass palette (split→palettegen→paletteuse) are
+ * appended in runExport's per-format output stage.
+ */
+export async function exportGif(projectPath, project, onProgress, options = {}) {
+  return runExport(projectPath, project, onProgress, { ...options, format: 'gif' })
 }
 
 /**

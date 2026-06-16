@@ -270,11 +270,16 @@ function registerIpcHandlers() {
         }
       }
 
+      // All visual + audio-only formats run through the unified export
+      // pipeline (exportMp4 → runExport), selected via the `format` field on
+      // the options object. exportGif is kept as a thin alias for GIF.
+      // Supported: mp4 | hevc | webm | gif | mp3 | m4a | png
+      const opts = { ...(options || {}), format }
       let outputPath
       if (format === 'gif') {
-        outputPath = await exportGif(projectPath, project, progressCallback)
+        outputPath = await exportGif(projectPath, project, progressCallback, opts)
       } else {
-        outputPath = await exportMp4(projectPath, project, progressCallback, options || {})
+        outputPath = await exportMp4(projectPath, project, progressCallback, opts)
       }
 
       // Update project with last export path
