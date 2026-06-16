@@ -1,0 +1,55 @@
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  color: var(--text2);
+  font-size: 11px;
+  font-family: var(--sans);
+  cursor: default;
+  white-space: nowrap;
+}
+
+.chipClickable {
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+.chipClickable:hover {
+  border-color: var(--border2);
+  color: var(--text);
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.dotGreen { background: var(--success); }
+.dotAmber { background: var(--warning); }
+.dotRed { background: var(--danger); }
+.dotBlue { background: var(--blue-text); }
+.dotGray { background: var(--text3); }
+
+.label {
+  line-height: 1;
+}
+
+.progressTrack {
+  width: 56px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg3);
+  overflow: hidden;
+}
+
+.progressFill {
+  display: block;
+  height: 100%;
+  background: var(--blue-text);
+  transition: width 0.3s ease;
+}

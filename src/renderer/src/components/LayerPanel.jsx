@@ -362,6 +362,15 @@ function LayerPanel({ project, projectId, currentTime, onEditChange }) {
                     />
                   </div>
                   <div className={styles.propRow}>
+                    <label>Reduce noise</label>
+                    <input
+                      type="checkbox"
+                      checked={!!edit.micDenoise}
+                      onChange={(e) => onEditChange({ micDenoise: e.target.checked })}
+                      title="Remove background noise (fans, hum) at export"
+                    />
+                  </div>
+                  <div className={styles.propRow}>
                     <label>Sync offset</label>
                     <input
                       type="range"
@@ -390,6 +399,47 @@ function LayerPanel({ project, projectId, currentTime, onEditChange }) {
                   <div className={styles.empty} style={{ fontSize: 11, marginTop: 4, lineHeight: 1.4 }}>
                     <strong>Volume:</strong> 0–200%, applies to preview &amp; export.<br/>
                     <strong>Sync offset:</strong> nudge audio earlier (−) or later (+) to align with the video. Tune by ear in preview, then export.
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* System audio */}
+      {project.recordings?.system && (
+        <div className={styles.section}>
+          <div className={styles.sectionHeader} onClick={() => toggleSection('system')} role="button" tabIndex={0}>
+            <span>{expandedSection === 'system' ? '▼' : '▶'} System audio</span>
+            <span className={styles.propValue} style={{ marginRight: 8 }}>
+              {edit.systemMuted ? 'Muted' : `${Math.round((edit.systemVolume ?? 1.0) * 100)}%`}
+            </span>
+          </div>
+          {expandedSection === 'system' && (
+            <div className={styles.sectionBody}>
+              <div className={styles.layerCard}>
+                <div className={styles.layerProps}>
+                  <div className={styles.propRow}>
+                    <label>Volume</label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="200"
+                      className={styles.slider}
+                      value={Math.round((edit.systemVolume ?? 1.0) * 100)}
+                      onChange={(e) => onEditChange({ systemVolume: parseInt(e.target.value) / 100 })}
+                      disabled={edit.systemMuted}
+                    />
+                    <span className={styles.propValue}>{Math.round((edit.systemVolume ?? 1.0) * 100)}%</span>
+                  </div>
+                  <div className={styles.propRow}>
+                    <label>Mute</label>
+                    <input
+                      type="checkbox"
+                      checked={!!edit.systemMuted}
+                      onChange={(e) => onEditChange({ systemMuted: e.target.checked })}
+                    />
                   </div>
                 </div>
               </div>
@@ -437,6 +487,43 @@ function LayerPanel({ project, projectId, currentTime, onEditChange }) {
                       min="0"
                       value={(layer.startTime || 0).toFixed(1)}
                       onChange={(e) => updateAudioLayer(layer.id, { startTime: parseFloat(e.target.value) || 0 })}
+                    />
+                  </div>
+                  <div className={styles.propRow}>
+                    <label>Fade in</label>
+                    <input
+                      type="number"
+                      className={styles.numInput}
+                      step="0.5"
+                      min="0"
+                      max="10"
+                      value={(layer.fadeIn || 0).toFixed(1)}
+                      onChange={(e) => updateAudioLayer(layer.id, { fadeIn: Math.max(0, parseFloat(e.target.value) || 0) })}
+                      title="Fade-in duration in seconds (applied at export)"
+                    />
+                    <span className={styles.propValue}>s</span>
+                  </div>
+                  <div className={styles.propRow}>
+                    <label>Fade out</label>
+                    <input
+                      type="number"
+                      className={styles.numInput}
+                      step="0.5"
+                      min="0"
+                      max="10"
+                      value={(layer.fadeOut || 0).toFixed(1)}
+                      onChange={(e) => updateAudioLayer(layer.id, { fadeOut: Math.max(0, parseFloat(e.target.value) || 0) })}
+                      title="Fade-out duration in seconds (applied at export)"
+                    />
+                    <span className={styles.propValue}>s</span>
+                  </div>
+                  <div className={styles.propRow}>
+                    <label>Duck under voice</label>
+                    <input
+                      type="checkbox"
+                      checked={!!layer.duckUnderVoice}
+                      onChange={(e) => updateAudioLayer(layer.id, { duckUnderVoice: e.target.checked })}
+                      title="Automatically lower this track while the recording audio has speech (applied at export)"
                     />
                   </div>
                 </div>

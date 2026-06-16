@@ -1,8 +1,19 @@
 import { app } from 'electron'
 import { join, basename } from 'path'
-import { readdir, readFile, writeFile, mkdir, rm, copyFile } from 'fs/promises'
+import { readdir, readFile, writeFile, mkdir, rm, copyFile, rename } from 'fs/promises'
 import { existsSync } from 'fs'
 import { v4 as uuid } from 'uuid'
+
+/**
+ * Write a file atomically: write to a temp sibling, then rename into place.
+ * rename() is atomic on the same filesystem, so an interrupted write leaves
+ * only the temp file behind — never a truncated final file.
+ */
+async function writeFileAtomic(destPath, data) {
+  const tmpPath = `${destPath}.part`
+  await writeFile(tmpPath, data)
+  await rename(tmpPath, destPath)
+}
 
 const PROJECTS_DIR = join(app.getPath('home'), 'Beam', 'projects')
 
@@ -37,8 +48,11 @@ export async function createProject(name) {
     thumbnail: null,
     recordings: {
       screen: null,
+      screenProxy: null,
       webcam: null,
-      mic: null
+      webcamProxy: null,
+      mic: null,
+      system: null
     },
     edit: {
       trimStart: 0,
@@ -49,6 +63,9 @@ export async function createProject(name) {
       speed: 1.0,
       micVolume: 1.0,
       micMuted: false,
+      micDenoise: false,
+      systemVolume: 1.0,
+      systemMuted: false,
       audioOffsetMs: 0,
       cuts: [],
       crop: {
@@ -108,8 +125,20 @@ export async function loadProject(id) {
   if (project.edit.zoomKeyframes === undefined) project.edit.zoomKeyframes = []
   if (project.edit.micVolume === undefined) project.edit.micVolume = 1.0
   if (project.edit.micMuted === undefined) project.edit.micMuted = false
+  if (project.edit.micDenoise === undefined) project.edit.micDenoise = false
+  if (project.edit.systemVolume === undefined) project.edit.systemVolume = 1.0
+  if (project.edit.systemMuted === undefined) project.edit.systemMuted = false
   if (project.edit.audioOffsetMs === undefined) project.edit.audioOffsetMs = 0
   if (project.recordings && project.recordings.mic === undefined) project.recordings.mic = null
+  if (project.recordings && project.recordings.system === undefined) project.recordings.system = null
+  // Pre-master/proxy-split projects: the single screen.webm was already
+  // re-encoded for seekability, so it serves as both master and proxy.
+  if (project.recordings && project.recordings.screenProxy === undefined) {
+    project.recordings.screenProxy = project.recordings.screen
+  }
+  if (project.recordings && project.recordings.webcamProxy === undefined) {
+    project.recordings.webcamProxy = project.recordings.webcam
+  }
 
   return project
 }
@@ -160,41 +189,98 @@ export async function deleteProject(id) {
 
 export async function saveRawRecording(projectId, type, buffer) {
   const projectPath = getProjectPath(projectId)
-  const rawPath = join(projectPath, `${type}.raw.webm`)
-
-  // Write the raw browser-recorded blob to a temp filename.
-  await writeFile(rawPath, Buffer.from(buffer))
 
   let filename
+  let proxyFilename = null
+
   if (type === 'screen' || type === 'webcam') {
-    // Re-encode to a SEEKABLE WebM (VP8 + frequent keyframes). MP4/H.264
-    // hits Chromium's VideoToolbox decoder bugs (-12909) on macOS — VP8
-    // in WebM uses the software decoder and works reliably.
-    filename = `${type}.webm`
-    const finalPath = join(projectPath, filename)
+    // The raw MediaRecorder blob IS the master — full original quality. It
+    // must never be re-encoded; export always reads from it. The browser
+    // can't seek it reliably (no Cues block), so we generate a separate
+    // SEEKABLE proxy (VP8 + frequent keyframes) purely for editor playback.
+    // VP8 in WebM uses Chromium's software decoder, sidestepping the macOS
+    // VideoToolbox bugs (-12909) that H.264 triggers.
+    filename = `${type}-master.webm`
+    const masterPath = join(projectPath, filename)
+    await writeFileAtomic(masterPath, Buffer.from(buffer))
+
+    proxyFilename = `${type}.webm`
+    const proxyPath = join(projectPath, proxyFilename)
     try {
       const { remuxWebm } = await import('./ffmpeg.js')
-      await remuxWebm(rawPath, finalPath)
-      const { unlink } = await import('fs/promises')
-      await unlink(rawPath).catch(() => {})
+      await remuxWebm(masterPath, proxyPath)
     } catch (err) {
-      console.warn(`Transcode failed for ${type}, keeping raw webm:`, err.message)
-      const { rename } = await import('fs/promises')
-      await rename(rawPath, finalPath).catch(() => {})
+      console.warn(`Proxy generation failed for ${type}, editor will use the master (seeking may be unreliable):`, err.message)
+      proxyFilename = filename
     }
   } else {
-    // Audio-only outputs (mic.webm) stay as WebM — playback as an <audio>
-    // element doesn't have the same seek issues.
+    // Audio-only outputs (mic.webm, system.webm) stay as-is — playback as
+    // an <audio> element doesn't have the same seek issues.
     filename = `${type}.webm`
-    const { rename } = await import('fs/promises')
-    await rename(rawPath, join(projectPath, filename))
+    await writeFileAtomic(join(projectPath, filename), Buffer.from(buffer))
   }
 
   // Update project.json
   const project = await loadProject(projectId)
   project.recordings[type] = filename
+  if (proxyFilename) {
+    project.recordings[`${type}Proxy`] = proxyFilename
+  }
   await saveProject(projectId, project)
   return filename
+}
+
+/**
+ * Create a project from an external video file (MP4, MOV, WebM, MKV, …).
+ * The original is copied in untouched as the master; a seekable editing
+ * proxy (with audio — imported masters carry their own soundtrack) and a
+ * thumbnail are generated. The whole existing editor then works on it.
+ */
+export async function importVideoAsProject(sourcePath, onProgress) {
+  const { probeVideo, remuxWebm, generateThumbnail } = await import('./ffmpeg.js')
+
+  const sourceName = basename(sourcePath)
+  const ext = sourceName.includes('.') ? sourceName.split('.').pop().toLowerCase() : 'mp4'
+  const displayName = sourceName.replace(/\.[^.]+$/, '')
+
+  const info = await probeVideo(sourcePath)
+  if (!info.duration) {
+    throw new Error('Could not read video duration — is this a valid video file?')
+  }
+
+  const project = await createProject(displayName)
+  const projectPath = getProjectPath(project.id)
+
+  const masterName = `screen-master.${ext}`
+  await copyFile(sourcePath, join(projectPath, masterName))
+
+  let proxyName = 'screen.webm'
+  try {
+    await remuxWebm(join(projectPath, masterName), join(projectPath, proxyName), {
+      keepAudio: info.hasAudio,
+      onProgress,
+      durationSec: info.duration
+    })
+  } catch (err) {
+    console.warn('Proxy generation failed for imported video, editor will use the master:', err.message)
+    proxyName = masterName
+  }
+
+  project.recordings.screen = masterName
+  project.recordings.screenProxy = proxyName
+  project.duration = info.duration
+  project.edit.trimEnd = info.duration
+  await saveProject(project.id, project)
+
+  try {
+    await generateThumbnail(join(projectPath, masterName), projectPath)
+    project.thumbnail = join(projectPath, 'thumb.jpg')
+    await saveProject(project.id, project)
+  } catch (err) {
+    console.warn('Thumbnail generation failed for imported video:', err.message)
+  }
+
+  return project
 }
 
 export async function listAssets(projectId) {

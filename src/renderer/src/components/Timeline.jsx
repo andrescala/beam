@@ -500,6 +500,56 @@ function Timeline({ project, projectId, currentTime, onSeek, onTrimChange, onCut
           </div>
         )}
 
+        {/* System audio track */}
+        {project.recordings?.system && (
+          <div className={styles.trackRow}>
+            <div className={styles.trackLabel}>
+              <div className={styles.trackDot} style={{ background: '#6366f1' }} />
+              System
+            </div>
+            <div className={styles.track} style={{ cursor: 'default' }}>
+              {trimStartPos > 0 && (
+                <div className={styles.trimDimmed} style={{ left: 0, width: `${trimStartPos}%` }} />
+              )}
+              {trimEndPos < 100 && (
+                <div className={styles.trimDimmed} style={{ left: `${trimEndPos}%`, right: 0 }} />
+              )}
+              {cuts.map((cut, i) => {
+                const a = (cut.start / duration) * 100
+                const b = (cut.end / duration) * 100
+                return <div key={i} className={styles.cutRegion} style={{ left: `${a}%`, width: `${b - a}%`, pointerEvents: 'none' }} />
+              })}
+              <div className={`${styles.clip} ${styles.audioClip}`}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}>
+                  <span>{project.edit?.systemMuted ? '🔇' : '🔊'}</span>
+                  <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {project.edit?.systemMuted ? 'Muted' : `System audio · ${Math.round((project.edit?.systemVolume ?? 1.0) * 100)}%`}
+                  </span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="200"
+                    className={styles.audioSlider}
+                    value={Math.round((project.edit?.systemVolume ?? 1.0) * 100)}
+                    onChange={(e) => onEditChange?.({ systemVolume: parseInt(e.target.value) / 100 })}
+                    onClick={(e) => e.stopPropagation()}
+                    disabled={project.edit?.systemMuted}
+                    title="Volume (0–200%)"
+                  />
+                  <button
+                    className={styles.audioMuteBtn}
+                    onClick={(e) => { e.stopPropagation(); onEditChange?.({ systemMuted: !project.edit?.systemMuted }) }}
+                    title={project.edit?.systemMuted ? 'Unmute' : 'Mute'}
+                  >
+                    {project.edit?.systemMuted ? 'Unmute' : 'Mute'}
+                  </button>
+                </span>
+              </div>
+              <div className={styles.playhead} style={{ left: `${playheadPos}%` }} />
+            </div>
+          </div>
+        )}
+
         {/* Webcam track */}
         {project.recordings?.webcam && (
           <div className={styles.trackRow}>

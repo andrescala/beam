@@ -27,6 +27,25 @@ function Editor() {
   const [bottomTab, setBottomTab] = useState('timeline') // timeline, layers, assets, captions
   const videoRef = useRef(null)
 
+  // Undo/redo history. Kept in refs (not state) so pushes from rapid slider
+  // drags don't re-render, and so StrictMode's double-invoked updaters can't
+  // corrupt it. `historyVersion` only refreshes the toolbar button state.
+  const projectRef = useRef(null)
+  const currentTimeRef = useRef(0)
+  const historyRef = useRef({ past: [], future: [] })
+  const lastPushRef = useRef(0)
+  const [, setHistoryVersion] = useState(0)
+
+  useEffect(() => {
+    projectRef.current = project
+  }, [project])
+
+  // Keep a ref of the playhead so the keyboard handler reads a fresh value
+  // even when the <video> element isn't mounted (it isn't in the effect deps).
+  useEffect(() => {
+    currentTimeRef.current = currentTime
+  }, [currentTime])
+
   useEffect(() => {
     loadProject()
   }, [projectId])
@@ -39,6 +58,8 @@ function Editor() {
       ])
       setProject(data)
       setProjectPath(path)
+      historyRef.current = { past: [], future: [] }
+      setHistoryVersion((v) => v + 1)
     } catch (err) {
       console.error('Failed to load project:', err)
       setError(err.message || 'Failed to load project')
@@ -48,17 +69,56 @@ function Editor() {
     }
   }
 
-  const updateEdit = useCallback((editUpdates) => {
-    setProject((prev) => {
-      if (!prev) return prev
-      const updated = { ...prev, edit: { ...prev.edit, ...editUpdates } }
-      // Save to disk asynchronously (fire-and-forget with error logging)
-      window.electronAPI.saveProject(projectId, updated).catch((err) => {
-        console.error('Failed to save edit:', err)
-      })
-      return updated
+  function applyProject(updated) {
+    projectRef.current = updated
+    setProject(updated)
+    // Save to disk asynchronously (fire-and-forget with error logging)
+    window.electronAPI.saveProject(projectId, updated).catch((err) => {
+      console.error('Failed to save edit:', err)
     })
+  }
+
+  const updateEdit = useCallback((editUpdates) => {
+    const prev = projectRef.current
+    if (!prev) return
+    const h = historyRef.current
+    // Coalesce bursts (slider drags) into one undo step: only snapshot when
+    // the last push was a moment ago.
+    const now = Date.now()
+    if (now - lastPushRef.current > 800 || h.past.length === 0) {
+      h.past.push(prev.edit)
+      if (h.past.length > 100) h.past.shift()
+    }
+    lastPushRef.current = now
+    h.future = []
+    applyProject({ ...prev, edit: { ...prev.edit, ...editUpdates } })
+    setHistoryVersion((v) => v + 1)
   }, [projectId])
+
+  const undo = useCallback(() => {
+    const prev = projectRef.current
+    const h = historyRef.current
+    if (!prev || h.past.length === 0) return
+    const restored = h.past.pop()
+    h.future.push(prev.edit)
+    lastPushRef.current = 0
+    applyProject({ ...prev, edit: restored })
+    setHistoryVersion((v) => v + 1)
+  }, [projectId])
+
+  const redo = useCallback(() => {
+    const prev = projectRef.current
+    const h = historyRef.current
+    if (!prev || h.future.length === 0) return
+    const restored = h.future.pop()
+    h.past.push(prev.edit)
+    lastPushRef.current = 0
+    applyProject({ ...prev, edit: restored })
+    setHistoryVersion((v) => v + 1)
+  }, [projectId])
+
+  const canUndo = historyRef.current.past.length > 0
+  const canRedo = historyRef.current.future.length > 0
 
   function handleSeek(time) {
     setCurrentTime(time)
@@ -92,14 +152,69 @@ function Editor() {
       // Don't trigger when typing in inputs
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return
 
+      const mod = e.metaKey || e.ctrlKey
+      if (mod && e.key.toLowerCase() === 'z') {
+        e.preventDefault()
+        if (e.shiftKey) redo()
+        else undo()
+        return
+      }
+      if (mod && e.key.toLowerCase() === 'y') {
+        e.preventDefault()
+        redo()
+        return
+      }
+      if (mod) return
+
       if (e.code === 'Space') {
         e.preventDefault()
         togglePlay()
+        return
+      }
+
+      const p = projectRef.current
+      if (!p) return
+      const duration = p.duration || 0
+      const t = videoRef.current ? videoRef.current.currentTime : currentTimeRef.current
+      const frameStep = e.shiftKey ? 1 : 1 / 30
+
+      switch (e.key) {
+        case 'ArrowLeft':
+          e.preventDefault()
+          handleSeek(Math.max(0, t - frameStep))
+          break
+        case 'ArrowRight':
+          e.preventDefault()
+          handleSeek(Math.min(duration, t + frameStep))
+          break
+        case 'Home':
+          e.preventDefault()
+          handleSeek(p.edit?.trimStart || 0)
+          break
+        case 'End':
+          e.preventDefault()
+          handleSeek(p.edit?.trimEnd || duration)
+          break
+        case 'i':
+        case 'I':
+          e.preventDefault()
+          updateEdit({ trimStart: Math.min(t, (p.edit?.trimEnd ?? duration) - 0.1) })
+          break
+        case 'o':
+        case 'O':
+          e.preventDefault()
+          updateEdit({ trimEnd: Math.max(t, (p.edit?.trimStart || 0) + 0.1) })
+          break
+        case '?':
+          setHelpOpen(true)
+          break
+        default:
+          break
       }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [playing, project])
+  }, [playing, project, undo, redo, updateEdit])
 
   if (loading) {
     return <div className={styles.loading}>Loading project...</div>
@@ -124,6 +239,24 @@ function Editor() {
           <span className={styles.projectName}>{project.name}</span>
         </div>
         <div className={styles.titlebarRight}>
+          <button
+            className={styles.helpBtn}
+            onClick={undo}
+            disabled={!canUndo}
+            style={!canUndo ? { opacity: 0.35, cursor: 'default' } : undefined}
+            title="Undo (Cmd/Ctrl+Z)"
+          >
+            &#x21B6;
+          </button>
+          <button
+            className={styles.helpBtn}
+            onClick={redo}
+            disabled={!canRedo}
+            style={!canRedo ? { opacity: 0.35, cursor: 'default' } : undefined}
+            title="Redo (Cmd/Ctrl+Shift+Z)"
+          >
+            &#x21B7;
+          </button>
           <button className={styles.helpBtn} onClick={() => setHelpOpen(true)} title="Help & tutorials">
             ?
           </button>

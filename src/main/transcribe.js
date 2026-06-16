@@ -45,6 +45,8 @@ function isCliVariant(bin) {
   return /whisper-cli$/.test(bin)
 }
 
+export { resolveWhisperBin, isCliVariant }
+
 /**
  * Convert an arbitrary audio/video file to a 16 kHz mono WAV.
  * Whisper works best with this exact format.
@@ -87,9 +89,17 @@ export async function transcribeAudio(audioPath, options = {}) {
     await convertToWav(audioPath, wavPath)
 
     if (isCliVariant(bin)) {
-      // whisper.cpp CLI variant — writes <input>.json next to the input file.
+      // whisper.cpp CLI variant — needs a ggml model FILE (not a model
+      // name). The whisper-manager downloads it on first use and passes
+      // its path in options.modelPath. Writes <input>.json next to the
+      // input file.
+      if (!options.modelPath || !existsSync(options.modelPath)) {
+        const err = new Error('Whisper model not downloaded')
+        err.code = 'WHISPER_MODEL_MISSING'
+        throw err
+      }
       await execFileAsync(bin, [
-        '-m', model,
+        '-m', options.modelPath,
         '-l', language,
         '-oj',          // output JSON
         '-f', wavPath

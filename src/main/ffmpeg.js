@@ -1,20 +1,20 @@
 import ffmpeg from 'fluent-ffmpeg'
 import ffmpegStatic from 'ffmpeg-static'
+import ffprobeStatic from 'ffprobe-static'
 import { join } from 'path'
 import { existsSync, unlinkSync } from 'fs'
 import { mkdir } from 'fs/promises'
-import { spawn } from 'child_process'
 
-// Fix path for asar packaging
+// Fix paths for asar packaging
 const ffmpegPath = ffmpegStatic.replace('app.asar', 'app.asar.unpacked')
-const ffprobePath = ffmpegPath.replace(/ffmpeg$/, 'ffprobe')
 ffmpeg.setFfmpegPath(ffmpegPath)
-// ffmpeg-static ships ffmpeg only; fluent-ffmpeg will look for ffprobe on PATH
-// for ffmpeg.ffprobe(). That's fine on macOS dev but we shell out manually
-// where we need fine-grained packet inspection.
+// ffmpeg-static ships ffmpeg only — bundle ffprobe separately so probing
+// works in packaged apps too (previously it silently relied on a system
+// ffprobe being on PATH).
+ffmpeg.setFfprobePath(ffprobeStatic.path.replace('app.asar', 'app.asar.unpacked'))
 
 // Get video dimensions via ffprobe
-function probeVideo(filePath) {
+export function probeVideo(filePath) {
   return new Promise((resolve, reject) => {
     ffmpeg.ffprobe(filePath, (err, metadata) => {
       if (err) return reject(err)
@@ -131,11 +131,11 @@ function computeOutputDuration(keepSegments) {
  *   • libvpx realtime mode — encoding stays under ~1× realtime on M-series.
  *   • Audio stripped (lives in mic.webm).
  */
-export function remuxWebm(inputPath, outputPath) {
+export function remuxWebm(inputPath, outputPath, opts = {}) {
+  const { keepAudio = false, onProgress = null, durationSec = 0 } = opts
   return new Promise((resolve, reject) => {
-    ffmpeg(inputPath)
+    let command = ffmpeg(inputPath)
       .videoCodec('libvpx')
-      .noAudio()
       .fps(30)
       .outputOptions([
         '-b:v', '3M',
@@ -145,17 +145,57 @@ export function remuxWebm(inputPath, outputPath) {
         '-keyint_min', '30',
         '-pix_fmt', 'yuv420p'
       ])
+
+    if (keepAudio) {
+      // Imported videos carry their audio in the master file (recordings
+      // never do — mic/system live in separate tracks), so the editing
+      // proxy must keep it for preview playback.
+      command = command.audioCodec('libopus').audioBitrate('128k')
+    } else {
+      command = command.noAudio()
+    }
+
+    command
       .save(outputPath)
+      .on('progress', (p) => {
+        if (!onProgress) return
+        if (p.percent) {
+          onProgress(Math.min(100, Math.round(p.percent)))
+        } else if (durationSec > 0 && p.timemark) {
+          const [h, m, s] = p.timemark.split(':').map(parseFloat)
+          const sec = (h || 0) * 3600 + (m || 0) * 60 + (s || 0)
+          onProgress(Math.min(100, Math.round((sec / durationSec) * 100)))
+        }
+      })
       .on('end', () => resolve())
       .on('error', reject)
   })
 }
 
-export async function exportMp4(projectPath, project, onProgress) {
+const CRF_BY_QUALITY = { high: 18, balanced: 23, small: 28 }
+
+export async function exportMp4(projectPath, project, onProgress, options = {}) {
   const screenPath = join(projectPath, project.recordings.screen)
   if (!existsSync(screenPath)) {
     throw new Error('Screen recording not found')
   }
+
+  const crf = CRF_BY_QUALITY[options.quality] || CRF_BY_QUALITY.balanced
+  // Two independent, composable sizing inputs:
+  //   • targetWidth+targetHeight — a social preset's exact WxH box, reached by
+  //     blur-fill or center-crop reframing (changes aspect ratio).
+  //   • capHeight — a proportional downscale cap from the resolution dropdown
+  //     (preserves aspect ratio).
+  // Both can apply: a social reframe runs first, then the cap shrinks the
+  // result if it's still taller than the cap. Keeping them separate means the
+  // resolution dropdown is never silently shadowed by a preset.
+  const targetWidth = options.targetWidth || null
+  const targetHeight = options.targetHeight || null
+  const capHeight = options.resolution === '1080p' ? 1080
+    : options.resolution === '720p' ? 720
+    : null
+  const fillMode = options.fillMode === 'crop' ? 'crop' : 'blur'
+  const normalizeLoudness = !!options.normalizeLoudness
 
   const screenInfo = await probeVideo(screenPath)
 
@@ -178,7 +218,8 @@ export async function exportMp4(projectPath, project, onProgress) {
   const outputDir = join(projectPath, 'exports')
   await mkdir(outputDir, { recursive: true })
   const timestamp = Date.now()
-  const outputPath = join(outputDir, `export-${timestamp}.mp4`)
+  const safeLabel = (options.label || '').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '')
+  const outputPath = join(outputDir, `export${safeLabel ? `-${safeLabel}` : ''}-${timestamp}.mp4`)
 
   const webcamPath = project.recordings?.webcam
     ? join(projectPath, project.recordings.webcam)
@@ -195,6 +236,13 @@ export async function exportMp4(projectPath, project, onProgress) {
   const micVolume = edit.micMuted ? 0 : (edit.micVolume != null ? edit.micVolume : 1.0)
   const audioOffsetMs = edit.audioOffsetMs || 0
   const audioOffsetSec = audioOffsetMs / 1000
+
+  // Optional system-audio track (separate system.webm recording)
+  const systemPath = project.recordings?.system
+    ? join(projectPath, project.recordings.system)
+    : null
+  const hasSystemFile = systemPath && existsSync(systemPath)
+  const systemVolume = edit.systemMuted ? 0 : (edit.systemVolume != null ? edit.systemVolume : 1.0)
 
   const keepSegments = computeKeepSegments(trimStart, trimEnd, cuts)
   if (keepSegments.length === 0) {
@@ -219,7 +267,16 @@ export async function exportMp4(projectPath, project, onProgress) {
   for (const layer of audioLayers) {
     const assetPath = join(projectPath, 'assets', layer.file)
     if (existsSync(assetPath)) {
-      audioAssetInputs.push({ layer, path: assetPath })
+      // Asset duration is needed to place the fade-out
+      let assetDuration = 0
+      if (layer.fadeOut > 0) {
+        try {
+          assetDuration = (await probeVideo(assetPath)).duration
+        } catch {
+          // fade-out is skipped when the duration can't be determined
+        }
+      }
+      audioAssetInputs.push({ layer, path: assetPath, assetDuration })
     }
   }
 
@@ -230,29 +287,38 @@ export async function exportMp4(projectPath, project, onProgress) {
     command = command.input(screenPath)
     let nextInputIdx = 1
 
-    // Audio input — prefer mic.webm with optional sync offset; fall back to
-    // the screen file's audio for legacy recordings without mic.webm.
-    let audioInputLabel
+    // Recording-audio sources. Each is trimmed/speed-adjusted independently,
+    // volume-scaled, then mixed. Mic comes from mic.webm with optional sync
+    // offset (falling back to audio muxed into the screen file for legacy
+    // recordings); system audio is its own optional track. Muted/zero-volume
+    // sources are dropped entirely.
+    const micDenoise = !!edit.micDenoise
+    const recordingAudio = [] // { label, volume, denoise }
     if (hasMicFile) {
-      if (audioOffsetSec !== 0) {
-        command = command.input(micPath).inputOptions(['-itsoffset', audioOffsetSec.toFixed(3)])
-      } else {
-        command = command.input(micPath)
+      if (micVolume > 0) {
+        if (audioOffsetSec !== 0) {
+          command = command.input(micPath).inputOptions(['-itsoffset', audioOffsetSec.toFixed(3)])
+        } else {
+          command = command.input(micPath)
+        }
+        recordingAudio.push({ label: `[${nextInputIdx}:a]`, volume: micVolume, denoise: micDenoise })
+        nextInputIdx++
       }
-      audioInputLabel = `[${nextInputIdx}:a]`
-      nextInputIdx++
-    } else if (screenInfo.hasAudio) {
+    } else if (screenInfo.hasAudio && micVolume > 0) {
       // Legacy: audio is muxed into the screen file. Add it as a separate
       // input only if we need to apply an offset.
       if (audioOffsetSec !== 0) {
         command = command.input(screenPath).inputOptions(['-itsoffset', audioOffsetSec.toFixed(3)])
-        audioInputLabel = `[${nextInputIdx}:a]`
+        recordingAudio.push({ label: `[${nextInputIdx}:a]`, volume: micVolume, denoise: micDenoise })
         nextInputIdx++
       } else {
-        audioInputLabel = '[0:a]'
+        recordingAudio.push({ label: '[0:a]', volume: micVolume, denoise: micDenoise })
       }
-    } else {
-      audioInputLabel = null  // no audio anywhere
+    }
+    if (hasSystemFile && systemVolume > 0) {
+      command = command.input(systemPath)
+      recordingAudio.push({ label: `[${nextInputIdx}:a]`, volume: systemVolume, denoise: false })
+      nextInputIdx++
     }
 
     // Webcam input (if present)
@@ -287,41 +353,59 @@ export async function exportMp4(projectPath, project, onProgress) {
     // ── Step 1: Trim/cut screen video ──
     if (hasCuts) {
       const vParts = []
-      const aParts = []
-
       keepSegments.forEach((seg, i) => {
         filters.push(`[0:v]trim=start=${seg.start}:end=${seg.end},setpts=PTS-STARTPTS[sv${i}]`)
         vParts.push(`[sv${i}]`)
-
-        if (audioInputLabel) {
-          filters.push(`${audioInputLabel}atrim=start=${seg.start}:end=${seg.end},asetpts=PTS-STARTPTS[sa${i}]`)
-          aParts.push(`[sa${i}]`)
-        }
       })
 
       if (keepSegments.length > 1) {
         filters.push(`${vParts.join('')}concat=n=${keepSegments.length}:v=1:a=0[sv_concat]`)
         videoOut = 'sv_concat'
-        if (audioInputLabel) {
-          filters.push(`${aParts.join('')}concat=n=${keepSegments.length}:v=0:a=1[sa_concat]`)
-          audioOut = 'sa_concat'
-        }
       } else {
         videoOut = 'sv0'
-        if (audioInputLabel) audioOut = 'sa0'
       }
     } else {
       filters.push(`[0:v]trim=start=${trimStart}:end=${trimEnd},setpts=PTS-STARTPTS[sv_trim]`)
       videoOut = 'sv_trim'
-      if (audioInputLabel) {
-        filters.push(`${audioInputLabel}atrim=start=${trimStart}:end=${trimEnd},asetpts=PTS-STARTPTS[sa_trim]`)
-        audioOut = 'sa_trim'
-      }
     }
+
+    // ── Step 1b: Trim/cut each recording-audio source the same way ──
+    const recAudioOuts = []
+    recordingAudio.forEach((src, s) => {
+      // FFT-based background-noise reduction on the mic. Applied ONCE to the
+      // whole source before any cut/trim split, so the denoiser trains its
+      // noise estimate on a continuous stream (applying it per-segment would
+      // restart adaptation at every cut, causing audible pumping). The
+      // denoised stream is reused across all keep-segments.
+      let srcLabel = src.label
+      if (src.denoise) {
+        filters.push(`${src.label}afftdn=nf=-25[sa${s}_dn]`)
+        srcLabel = `[sa${s}_dn]`
+      }
+      if (hasCuts && keepSegments.length > 1) {
+        // Fan the (possibly denoised) source out into one branch per keep
+        // segment, trim each, then concat — a label can only be consumed
+        // once, so asplit is required when there are multiple segments.
+        const splitOuts = keepSegments.map((_, i) => `[sa${s}_src${i}]`).join('')
+        filters.push(`${srcLabel}asplit=${keepSegments.length}${splitOuts}`)
+        const aParts = []
+        keepSegments.forEach((seg, i) => {
+          filters.push(`[sa${s}_src${i}]atrim=start=${seg.start}:end=${seg.end},asetpts=PTS-STARTPTS[sa${s}_${i}]`)
+          aParts.push(`[sa${s}_${i}]`)
+        })
+        filters.push(`${aParts.join('')}concat=n=${keepSegments.length}:v=0:a=1[sa${s}_concat]`)
+        recAudioOuts.push(`sa${s}_concat`)
+      } else {
+        // Single keep-segment (with or without cuts): one trim covers it.
+        const seg = hasCuts ? keepSegments[0] : { start: trimStart, end: trimEnd }
+        filters.push(`${srcLabel}atrim=start=${seg.start}:end=${seg.end},asetpts=PTS-STARTPTS[sa${s}_trim]`)
+        recAudioOuts.push(`sa${s}_trim`)
+      }
+    })
 
     // If no audio source at all, generate a silent track so the output MP4
     // is well-formed.
-    if (!audioInputLabel) {
+    if (recordingAudio.length === 0) {
       const silenceDuration = computeOutputDuration(keepSegments)
       filters.push(`aevalsrc=0:d=${silenceDuration}[sa_silence]`)
       audioOut = 'sa_silence'
@@ -332,8 +416,34 @@ export async function exportMp4(projectPath, project, onProgress) {
       filters.push(`[${videoOut}]setpts=PTS/${speed}[sv_speed]`)
       videoOut = 'sv_speed'
       const tempoFilters = buildTempoChain(speed)
-      filters.push(`[${audioOut}]${tempoFilters}[sa_speed]`)
-      audioOut = 'sa_speed'
+      recAudioOuts.forEach((label, s) => {
+        filters.push(`[${label}]${tempoFilters}[sa${s}_speed]`)
+        recAudioOuts[s] = `sa${s}_speed`
+      })
+      if (recordingAudio.length === 0) {
+        filters.push(`[${audioOut}]${tempoFilters}[sa_speed]`)
+        audioOut = 'sa_speed'
+      }
+    }
+
+    // ── Step 2b: Per-source volume, then mix recording-audio sources ──
+    recAudioOuts.forEach((label, s) => {
+      if (recordingAudio[s].volume !== 1.0) {
+        filters.push(`[${label}]volume=${recordingAudio[s].volume}[sa${s}_vol]`)
+        recAudioOuts[s] = `sa${s}_vol`
+      }
+    })
+    if (recAudioOuts.length === 1) {
+      audioOut = recAudioOuts[0]
+    } else if (recAudioOuts.length > 1) {
+      // Mix mic + system. normalize=0 keeps the user's per-track volumes
+      // intact (amix's default normalize would silently halve everything),
+      // but summing two near-full-scale sources can exceed 0 dBFS, so a
+      // soft limiter catches the peaks instead of letting them hard-clip.
+      // duration=longest avoids truncating the system track if it ran a few
+      // ms longer than the mic.
+      filters.push(`${recAudioOuts.map((l) => `[${l}]`).join('')}amix=inputs=${recAudioOuts.length}:duration=longest:normalize=0,alimiter=limit=0.97[sa_recmix]`)
+      audioOut = 'sa_recmix'
     }
 
     // ── Step 3: Crop ──
@@ -372,7 +482,11 @@ export async function exportMp4(projectPath, project, onProgress) {
       // Each keyframe: { time, x, y, zoom, duration }
       // Build a zoompan expression that interpolates between keyframes
       const sorted = [...zoomKeyframes].sort((a, b) => a.time - b.time)
-      const fps = 30
+      // zoompan re-times its output to the given fps (frame count is
+      // preserved, d=1). The stream at this point is already sped up, so
+      // the output rate must be capture-fps × speed — otherwise zoompan
+      // stretches the video back to 1× and desyncs it from the audio.
+      const fps = 30 * speed
       const zoomExprs = []
       const xExprs = []
       const yExprs = []
@@ -525,40 +639,135 @@ export async function exportMp4(projectPath, project, onProgress) {
     }
 
     // ── Step 7: Audio mixing ──
-    // Apply recording-audio volume (covers mute too) before mixing in any added audio layers.
-    if (audioInputLabel && micVolume !== 1.0) {
-      filters.push(`[${audioOut}]volume=${micVolume}[mic_vol]`)
-      audioOut = 'mic_vol'
-    }
-
+    // Recording-audio volumes were applied in Step 2b; here we mix in any
+    // imported audio layers (music, SFX).
     if (audioAssetInputs.length > 0) {
+      // Auto-ducking: layers marked duckUnderVoice are sidechain-compressed
+      // against the recording audio (the "voice"), so music drops whenever
+      // someone speaks. Each ducked layer needs its own copy of the voice
+      // track as a compressor key.
+      const hasVoice = recordingAudio.length > 0
+      const duckedCount = hasVoice
+        ? audioAssetInputs.filter(({ layer }) => layer.duckUnderVoice).length
+        : 0
+      if (duckedCount > 0) {
+        const splitOuts = ['[a_voice_main]']
+        for (let k = 0; k < duckedCount; k++) splitOuts.push(`[a_key${k}]`)
+        filters.push(`[${audioOut}]asplit=${duckedCount + 1}${splitOuts.join('')}`)
+        audioOut = 'a_voice_main'
+      }
+
       // Mix imported audio layers with recording audio
       const audioLabels = [`[${audioOut}]`]
+      let keyIdx = 0
       for (let i = 0; i < audioAssetInputs.length; i++) {
-        const { layer } = audioAssetInputs[i]
+        const { layer, assetDuration } = audioAssetInputs[i]
         const inputIdx = audioInputMap[i]
         const vol = layer.volume != null ? layer.volume : 0.3
         const delay = Math.round((layer.startTime || 0) * 1000) // adelay uses ms
 
-        const label = `aud${i}`
-        filters.push(`[${inputIdx}:a]volume=${vol},adelay=${delay}|${delay}[${label}]`)
+        // Fades run in the asset's own time (before adelay shifts it)
+        let chain = `volume=${vol}`
+        const fadeIn = layer.fadeIn || 0
+        const fadeOut = layer.fadeOut || 0
+        if (fadeIn > 0) {
+          chain += `,afade=t=in:st=0:d=${fadeIn}`
+        }
+        if (fadeOut > 0) {
+          if (assetDuration > fadeOut) {
+            chain += `,afade=t=out:st=${(assetDuration - fadeOut).toFixed(3)}:d=${fadeOut}`
+          } else {
+            // Duration unknown (probe failed) — fade out anchored to the end
+            // of the stream via the reverse trick, so the fade is never
+            // silently dropped. areverse buffers the layer, which is fine
+            // for music/SFX beds.
+            chain += `,areverse,afade=t=in:st=0:d=${fadeOut},areverse`
+          }
+        }
+        chain += `,adelay=${delay}|${delay}`
+
+        let label = `aud${i}`
+        filters.push(`[${inputIdx}:a]${chain}[${label}]`)
+
+        if (layer.duckUnderVoice && duckedCount > 0) {
+          filters.push(`[${label}][a_key${keyIdx}]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=500[${label}_ducked]`)
+          label = `${label}_ducked`
+          keyIdx++
+        }
         audioLabels.push(`[${label}]`)
       }
 
-      filters.push(`${audioLabels.join('')}amix=inputs=${audioLabels.length}:duration=first:dropout_transition=2[amixed]`)
+      filters.push(`${audioLabels.join('')}amix=inputs=${audioLabels.length}:duration=first:dropout_transition=2:normalize=0[amixed]`)
       audioOut = 'amixed'
     }
 
+    // ── Step 7b: Output reframe / scaling ──
+    const refWidth2 = hasCrop ? Math.round(screenInfo.width * crop.width) : screenInfo.width
+    const refHeight2 = hasCrop ? Math.round(screenInfo.height * crop.height) : screenInfo.height
+    let fw = refWidth2 % 2 === 0 ? refWidth2 : refWidth2 - 1
+    let fh = refHeight2 % 2 === 0 ? refHeight2 : refHeight2 - 1
+
+    if (targetWidth && targetHeight) {
+      // Social preset: exact WxH output. Same aspect → plain scale; aspect
+      // change → blur-fill (video fit inside a blurred copy of itself) or
+      // center-crop to fill, per fillMode.
+      const tw = targetWidth % 2 === 0 ? targetWidth : targetWidth - 1
+      const th = targetHeight % 2 === 0 ? targetHeight : targetHeight - 1
+      if (tw !== fw || th !== fh) {
+        const sameAspect = Math.abs(fw / fh - tw / th) < 0.01
+        // setsar=1 keeps square pixels — the scale/crop math can otherwise
+        // yield a non-1:1 SAR that breaks the intro/outro concat (which
+        // requires every segment's SAR to match the 1:1 card sources).
+        if (sameAspect) {
+          filters.push(`[${videoOut}]scale=${tw}:${th}:flags=lanczos,setsar=1[v_reframe]`)
+        } else if (fillMode === 'crop') {
+          filters.push(`[${videoOut}]scale=${tw}:${th}:force_original_aspect_ratio=increase:flags=lanczos,crop=${tw}:${th},setsar=1[v_reframe]`)
+        } else {
+          filters.push(`[${videoOut}]split=2[v_bgsrc][v_fgsrc]`)
+          filters.push(`[v_bgsrc]scale=${tw}:${th}:force_original_aspect_ratio=increase:flags=lanczos,crop=${tw}:${th},boxblur=20:20[v_bg]`)
+          filters.push(`[v_fgsrc]scale=${tw}:${th}:force_original_aspect_ratio=decrease:flags=lanczos[v_fg]`)
+          filters.push(`[v_bg][v_fg]overlay=(W-w)/2:(H-h)/2,setsar=1[v_reframe]`)
+        }
+        videoOut = 'v_reframe'
+        fw = tw
+        fh = th
+      }
+    }
+
+    // Proportional height cap (resolution dropdown) — composes on top of any
+    // social reframe above.
+    if (capHeight && capHeight < fh) {
+      const scaledW = Math.round(fw * (capHeight / fh))
+      fw = scaledW % 2 === 0 ? scaledW : scaledW - 1
+      fh = capHeight % 2 === 0 ? capHeight : capHeight - 1
+      filters.push(`[${videoOut}]scale=${fw}:${fh}:flags=lanczos,setsar=1[v_resized]`)
+      videoOut = 'v_resized'
+    }
+
+    // ── Step 7c: Loudness normalization ──
+    // Applied to the mixed CONTENT audio before any intro/outro silence is
+    // concatenated around it — otherwise loudnorm's measurement window
+    // includes the leading/trailing silent cards and skews the gain,
+    // producing an audible level ramp at the start of real content.
+    if (normalizeLoudness) {
+      filters.push(`[${audioOut}]loudnorm=I=-14:TP=-1.5:LRA=11[a_norm]`)
+      audioOut = 'a_norm'
+    }
+
     // ── Step 8: Intro/outro title cards ──
-    const finalWidth = hasCrop ? Math.round(screenInfo.width * crop.width) : screenInfo.width
-    const finalHeight = hasCrop ? Math.round(screenInfo.height * crop.height) : screenInfo.height
-    const fw = finalWidth % 2 === 0 ? finalWidth : finalWidth - 1
-    const fh = finalHeight % 2 === 0 ? finalHeight : finalHeight - 1
 
     if (introCard || outroCard) {
       // Ensure main content dimensions match title cards for concat
       filters.push(`[${videoOut}]scale=${fw}:${fh}:force_original_aspect_ratio=disable[v_scaled]`)
       videoOut = 'v_scaled'
+
+      // concat requires every segment's audio to share sample rate, format,
+      // and channel layout. Upstream filters (notably loudnorm, which emits
+      // 192 kHz) and the silent card sources would otherwise mismatch, so we
+      // force a common format on the content audio and on each card's silence.
+      const AFMT = 'aformat=sample_rates=48000:channel_layouts=stereo'
+      filters.push(`[${audioOut}]${AFMT}[a_concat_main]`)
+      audioOut = 'a_concat_main'
 
       const concatParts = []
       const concatAudioParts = []
@@ -586,8 +795,8 @@ export async function exportMp4(projectPath, project, onProgress) {
         }
 
         concatParts.push(`[${introLabel}]`)
-        // Silent audio for intro
-        filters.push(`aevalsrc=0:d=${dur}[intro_a]`)
+        // Silent audio for intro (matched to the content audio format)
+        filters.push(`aevalsrc=0:d=${dur},${AFMT}[intro_a]`)
         concatAudioParts.push(`[intro_a]`)
         partCount++
       }
@@ -619,13 +828,15 @@ export async function exportMp4(projectPath, project, onProgress) {
         }
 
         concatParts.push(`[${outroLabel}]`)
-        filters.push(`aevalsrc=0:d=${dur}[outro_a]`)
+        filters.push(`aevalsrc=0:d=${dur},${AFMT}[outro_a]`)
         concatAudioParts.push(`[outro_a]`)
         partCount++
       }
 
-      // Concat all parts
-      filters.push(`${concatParts.join('')}${concatAudioParts.join('')}concat=n=${partCount}:v=1:a=1[v_final][a_final]`)
+      // Concat all parts. The concat filter requires inputs interleaved per
+      // segment ([v0][a0][v1][a1]…), NOT all video then all audio.
+      const interleaved = concatParts.map((v, i) => v + concatAudioParts[i]).join('')
+      filters.push(`${interleaved}concat=n=${partCount}:v=1:a=1[v_final][a_final]`)
       videoOut = 'v_final'
       audioOut = 'a_final'
     }
@@ -636,7 +847,7 @@ export async function exportMp4(projectPath, project, onProgress) {
       `-map [${audioOut}]`,
       '-c:v libx264',
       '-preset medium',
-      '-crf 23',
+      `-crf ${crf}`,
       '-c:a aac',
       '-b:a 128k',
       '-movflags +faststart',

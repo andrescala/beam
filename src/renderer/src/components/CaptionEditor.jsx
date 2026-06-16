@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useToast } from './Toast'
+import WhisperStatus from './WhisperStatus'
 import styles from './CaptionEditor.module.css'
 
 function CaptionEditor({ project, projectId, currentTime, onEditChange }) {
@@ -32,12 +33,12 @@ function CaptionEditor({ project, projectId, currentTime, onEditChange }) {
   async function handleTranscribe() {
     setTranscribing(true)
     try {
-      showToast('info', 'Transcribing with Whisper — this can take a minute…')
+      showToast('info', 'Transcribing with Whisper — this can take a minute… (the model downloads automatically the first time)')
 
       const result = await window.electronAPI.transcribeRecording(projectId, { model: 'base.en' })
 
       if (result.code === 'WHISPER_NOT_FOUND') {
-        showToast('error', 'Whisper is not installed. Run: brew install openai-whisper')
+        showToast('error', 'Whisper engine not installed. Run: brew install whisper-cpp (or pip install openai-whisper)')
         return
       }
       if (result.error) {
@@ -96,6 +97,7 @@ function CaptionEditor({ project, projectId, currentTime, onEditChange }) {
       <div className={styles.header}>
         <span className={styles.title}>Captions ({captions.length})</span>
         <div className={styles.actions}>
+          <WhisperStatus />
           <button
             className={styles.actionBtn}
             onClick={handleTranscribe}
