@@ -22,6 +22,7 @@ import { generateThumbnail, exportMp4, exportGif, extractAudio, detectSilence } 
 import { transcribeAudio, isWhisperAvailable } from './transcribe.js'
 import { getWhisperStatus, downloadModel, ensureWhisperReady, onStatusChange } from './whisper-manager.js'
 import { getPreferences, setPreferences } from './preferences.js'
+import { appendChunk, finalizeCapture, findRecoverableCaptures } from './capture-store.js'
 
 // Force Chromium to use software H.264 decoding. macOS VideoToolbox
 // occasionally throws -12909 (VTDecompressionOutputCallback) on otherwise
@@ -221,6 +222,21 @@ function registerIpcHandlers() {
   // Recording
   ipcMain.handle('save-raw-recording', async (_event, projectId, type, buffer) => {
     return await saveRawRecording(projectId, type, buffer)
+  })
+
+  // Crash-safe streaming (R8): append each MediaRecorder chunk to disk as it
+  // arrives so a crash mid-recording can't lose everything.
+  ipcMain.handle('capture-append-chunk', async (_event, projectId, type, arrayBuffer) => {
+    return await appendChunk(projectId, type, arrayBuffer)
+  })
+
+  ipcMain.handle('capture-finalize', async (_event, projectId, type) => {
+    return await finalizeCapture(projectId, type)
+  })
+
+  // Detect orphaned in-progress captures left by a crash (recovery).
+  ipcMain.handle('list-recoverable-captures', async () => {
+    return await findRecoverableCaptures()
   })
 
   // Asset import (images, audio files)
@@ -578,6 +594,26 @@ if (!gotTheLock) {
 
     await ensureProjectsDir()
     registerIpcHandlers()
+
+    // Crash recovery (R8): scan for captures interrupted by a crash and push
+    // the list to the renderer once it's ready. The renderer can also pull it
+    // on demand via the `list-recoverable-captures` IPC.
+    findRecoverableCaptures()
+      .then((recoverable) => {
+        if (recoverable.length === 0) return
+        console.log(`Found ${recoverable.length} recoverable recording(s) from a previous session`)
+        const send = () => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('recoverable-captures', recoverable)
+          }
+        }
+        if (mainWindow && mainWindow.webContents.isLoading()) {
+          mainWindow.webContents.once('did-finish-load', send)
+        } else {
+          send()
+        }
+      })
+      .catch((err) => console.warn('Recovery scan failed:', err.message))
 
     // Forward whisper model-download status changes to the renderer chip
     onStatusChange((status) => {

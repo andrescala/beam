@@ -18,6 +18,13 @@ const electronAPI = {
   saveRawRecording: (projectId, type, buffer) =>
     ipcRenderer.invoke('save-raw-recording', projectId, type, buffer),
 
+  // Crash-safe streaming recording (R8)
+  appendRecordingChunk: (projectId, type, arrayBuffer) =>
+    ipcRenderer.invoke('capture-append-chunk', projectId, type, arrayBuffer),
+  finalizeRecording: (projectId, type) =>
+    ipcRenderer.invoke('capture-finalize', projectId, type),
+  listRecoverableCaptures: () => ipcRenderer.invoke('list-recoverable-captures'),
+
   // Assets
   importAsset: (projectId, type) => ipcRenderer.invoke('import-asset', projectId, type),
   listAssets: (projectId) => ipcRenderer.invoke('list-assets', projectId),
@@ -78,6 +85,11 @@ const electronAPI = {
     const handler = (_event, percent) => callback(percent)
     ipcRenderer.on('import-progress', handler)
     return () => ipcRenderer.removeListener('import-progress', handler)
+  },
+  onRecoverableCaptures: (callback) => {
+    const handler = (_event, list) => callback(list)
+    ipcRenderer.on('recoverable-captures', handler)
+    return () => ipcRenderer.removeListener('recoverable-captures', handler)
   }
 }
 

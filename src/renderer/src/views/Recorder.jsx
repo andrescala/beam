@@ -18,9 +18,15 @@ function Recorder() {
     webcamEnabled,
     systemAudioEnabled,
     webcamStream,
+    fps,
+    captureMode,
+    region,
     selectSource,
     setWebcamEnabled,
     setSystemAudioEnabled,
+    setFps,
+    setCaptureMode,
+    setRegion,
     startCountdown,
     startRecording,
     pauseRecording,
@@ -95,6 +101,12 @@ function Recorder() {
         onSystemAudioToggle={setSystemAudioEnabled}
         onStart={startCountdown}
         selectedSource={selectedSource}
+        fps={fps}
+        onFpsChange={setFps}
+        captureMode={captureMode}
+        onCaptureModeChange={setCaptureMode}
+        region={region}
+        onRegionChange={setRegion}
       />
     )
   }
