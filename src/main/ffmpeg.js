@@ -925,9 +925,14 @@ async function runExport(projectPath, project, onProgress, options = {}) {
       // and channel layout. Upstream filters (notably loudnorm, which emits
       // 192 kHz) and the silent card sources would otherwise mismatch, so we
       // force a common format on the content audio and on each card's silence.
+      // GIF/PNG carry no audio (needsAudio === false), so we concat video-only
+      // and skip every audio leg — otherwise we'd reference an undefined
+      // audioOut label and FFmpeg would reject the filtergraph.
       const AFMT = 'aformat=sample_rates=48000:channel_layouts=stereo'
-      filters.push(`[${audioOut}]${AFMT}[a_concat_main]`)
-      audioOut = 'a_concat_main'
+      if (needsAudio) {
+        filters.push(`[${audioOut}]${AFMT}[a_concat_main]`)
+        audioOut = 'a_concat_main'
+      }
 
       const concatParts = []
       const concatAudioParts = []
@@ -956,14 +961,16 @@ async function runExport(projectPath, project, onProgress, options = {}) {
 
         concatParts.push(`[${introLabel}]`)
         // Silent audio for intro (matched to the content audio format)
-        filters.push(`aevalsrc=0:d=${dur},${AFMT}[intro_a]`)
-        concatAudioParts.push(`[intro_a]`)
+        if (needsAudio) {
+          filters.push(`aevalsrc=0:d=${dur},${AFMT}[intro_a]`)
+          concatAudioParts.push(`[intro_a]`)
+        }
         partCount++
       }
 
       // Main content
       concatParts.push(`[${videoOut}]`)
-      concatAudioParts.push(`[${audioOut}]`)
+      if (needsAudio) concatAudioParts.push(`[${audioOut}]`)
       partCount++
 
       if (outroCard) {
@@ -988,17 +995,25 @@ async function runExport(projectPath, project, onProgress, options = {}) {
         }
 
         concatParts.push(`[${outroLabel}]`)
-        filters.push(`aevalsrc=0:d=${dur},${AFMT}[outro_a]`)
-        concatAudioParts.push(`[outro_a]`)
+        if (needsAudio) {
+          filters.push(`aevalsrc=0:d=${dur},${AFMT}[outro_a]`)
+          concatAudioParts.push(`[outro_a]`)
+        }
         partCount++
       }
 
       // Concat all parts. The concat filter requires inputs interleaved per
-      // segment ([v0][a0][v1][a1]…), NOT all video then all audio.
-      const interleaved = concatParts.map((v, i) => v + concatAudioParts[i]).join('')
-      filters.push(`${interleaved}concat=n=${partCount}:v=1:a=1[v_final][a_final]`)
+      // segment ([v0][a0][v1][a1]…), NOT all video then all audio. For
+      // audio-bearing formats we emit a v+a concat; for GIF/PNG (no audio) we
+      // emit a video-only concat so there are no dangling audio legs.
+      if (needsAudio) {
+        const interleaved = concatParts.map((v, i) => v + concatAudioParts[i]).join('')
+        filters.push(`${interleaved}concat=n=${partCount}:v=1:a=1[v_final][a_final]`)
+        audioOut = 'a_final'
+      } else {
+        filters.push(`${concatParts.join('')}concat=n=${partCount}:v=1[v_final]`)
+      }
       videoOut = 'v_final'
-      audioOut = 'a_final'
     }
 
     // ── Step 9: Per-format output adaptation ──
