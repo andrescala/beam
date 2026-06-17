@@ -3,7 +3,7 @@ import { join, basename } from 'path'
 import { readdir, readFile, writeFile, mkdir, rm, copyFile, rename } from 'fs/promises'
 import { existsSync } from 'fs'
 import { v4 as uuid } from 'uuid'
-import { migrateProjectToV2 } from '../shared/render-model.js'
+import { migrateProjectToV2, buildRenderModel } from '../shared/render-model.js'
 
 /**
  * Write a file atomically: write to a temp sibling, then rename into place.
@@ -307,6 +307,76 @@ export async function importVideoAsProject(sourcePath, onProgress) {
     console.warn('Thumbnail generation failed for imported video:', err.message)
   }
 
+  return project
+}
+
+/**
+ * Append an external video as a new clip on an existing project's timeline.
+ * Copies the source in as its own master (never the screen-master, so the
+ * original recording is untouched), generates a seekable proxy with audio,
+ * registers it in `media`, and pushes a clip onto `timeline.videoTrack` at the
+ * current end. Returns the updated (v2) project.
+ */
+export async function appendClipToProject(projectId, sourcePath, onProgress) {
+  const { probeVideo, remuxWebm } = await import('./ffmpeg.js')
+
+  const project = await loadProject(projectId) // migrates to v2 if needed
+  const projectPath = getProjectPath(projectId)
+
+  const info = await probeVideo(sourcePath)
+  if (!info.duration) {
+    throw new Error('Could not read video duration — is this a valid video file?')
+  }
+
+  const ext = basename(sourcePath).includes('.')
+    ? basename(sourcePath).split('.').pop().toLowerCase()
+    : 'mp4'
+  const mediaId = `clip-${uuid().slice(0, 8)}`
+  const masterName = `${mediaId}-master.${ext}`
+  await copyFile(sourcePath, join(projectPath, masterName))
+
+  let proxyName = `${mediaId}.webm`
+  try {
+    await remuxWebm(join(projectPath, masterName), join(projectPath, proxyName), {
+      keepAudio: info.hasAudio,
+      onProgress,
+      durationSec: info.duration
+    })
+  } catch (err) {
+    console.warn('Proxy generation failed for appended clip, using master:', err.message)
+    proxyName = masterName
+  }
+
+  // Ensure v2 containers exist (a freshly created project may still be v1-shaped
+  // until first load migrates it; loadProject above guarantees v2, but guard).
+  if (!project.media) project.media = {}
+  if (!project.timeline) project.timeline = { videoTrack: [], overlayTracks: [], audioTracks: [], webcam: null }
+
+  project.media[mediaId] = {
+    id: mediaId, kind: 'import', master: masterName, proxy: proxyName,
+    hasAudio: info.hasAudio, width: info.width, height: info.height, duration: info.duration
+  }
+
+  // Place the clip at the current timeline end. buildRenderModel already
+  // computes the timeline duration (max of every clip's timelineStart + its
+  // speed-adjusted out-duration) — reuse it so this stays in step with what the
+  // exporter renders rather than re-deriving the same formula here.
+  const track = project.timeline.videoTrack
+  const end = buildRenderModel(project).duration
+  track.push({
+    id: `clip-${uuid().slice(0, 8)}`,
+    mediaId,
+    sourceIn: 0,
+    sourceOut: info.duration,
+    timelineStart: end,
+    speed: 1,
+    transform: null,
+    effects: null,
+    transitionIn: null
+  })
+
+  project.duration = end + info.duration
+  await saveProject(projectId, project)
   return project
 }
 

@@ -4,6 +4,7 @@ import ffprobeStatic from 'ffprobe-static'
 import { join } from 'path'
 import { existsSync, unlinkSync } from 'fs'
 import { mkdir } from 'fs/promises'
+import { buildRenderModel } from '../shared/render-model.js'
 
 // Fix paths for asar packaging
 const ffmpegPath = ffmpegStatic.replace('app.asar', 'app.asar.unpacked')
@@ -312,6 +313,23 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
  */
 async function runExport(projectPath, project, onProgress, options = {}) {
   const format = options.format || 'mp4'
+
+  // Multi-clip timeline routing: if the project's video track stitches clips
+  // from MORE THAN ONE source (an appended/imported clip), use the dedicated
+  // clip-concatenation path. Single-source projects — including all migrated
+  // v1 projects, whose multiple segments are just cuts of one recording — keep
+  // the original fully-featured pipeline below unchanged (guaranteed parity).
+  const routeModel = buildRenderModel(project)
+  // Only count clips whose media actually resolves to a file — a clip with a
+  // dangling mediaId must not flip routing to the multi-clip path (which would
+  // then silently drop it), and must not strand a single real clip there.
+  const distinctSources = new Set(
+    routeModel.videoSegments.filter((s) => s.sourceFile).map((s) => s.mediaId)
+  )
+  if (distinctSources.size > 1) {
+    return exportTimelineClips(projectPath, project, routeModel, onProgress, options)
+  }
+
   const screenPath = join(projectPath, project.recordings.screen)
   if (!existsSync(screenPath)) {
     throw new Error('Screen recording not found')
@@ -1111,6 +1129,281 @@ async function runExport(projectPath, project, onProgress, options = {}) {
  */
 export async function exportGif(projectPath, project, onProgress, options = {}) {
   return runExport(projectPath, project, onProgress, { ...options, format: 'gif' })
+}
+
+/**
+ * Multi-clip timeline export: concatenate the video clips on the timeline
+ * (which may come from different source files) into one output, each clip
+ * trimmed to its in/out, speed-adjusted, and letterboxed onto a common canvas.
+ *
+ * Audio is assembled in lockstep with the video concat: each clip contributes
+ * the recording's mic/system tracks when it's a screen segment (the screen
+ * master is video-only, so its narration lives in the separate mic.webm), its
+ * own embedded audio when it's an imported clip, or generated silence. Imported
+ * music/SFX tracks are overlaid on the finished mix, and loudness normalization
+ * is applied last. Export resolution presets (social WxH + height cap) are
+ * honored exactly as in the single-source pipeline.
+ *
+ * Still deferred to the full timeline rewrite (and only logged here, not
+ * rendered): visual overlays (text/image/captions), intro/outro title cards,
+ * and the webcam bubble.
+ *
+ * @param {object} model  the RenderModel (master files) from buildRenderModel
+ */
+async function exportTimelineClips(projectPath, project, model, onProgress, options = {}) {
+  const format = options.format || 'mp4'
+  const media = project.media || {}
+  const segments = model.videoSegments.filter((s) => s.sourceFile)
+  if (segments.length === 0) throw new Error('No clips to export')
+
+  // Resolve absolute source paths and validate they exist.
+  for (const seg of segments) {
+    seg._abs = join(projectPath, seg.sourceFile)
+    if (!existsSync(seg._abs)) throw new Error(`Clip source not found: ${seg.sourceFile}`)
+  }
+
+  const crf = CRF_BY_QUALITY[options.quality] || CRF_BY_QUALITY.balanced
+  const normalizeLoudness = !!options.normalizeLoudness
+  const isGif = format === 'gif'
+  const isAudioOnly = AUDIO_ONLY_FORMATS.has(format)
+  const isPng = format === 'png'
+  const needsVideo = !isAudioOnly
+  const needsAudio = !isPng && !isGif
+
+  // Single probe per clip: canvas dimensions (first clip) + audio presence.
+  for (const seg of segments) {
+    try {
+      const info = await probeVideo(seg._abs)
+      seg._hasAudio = !!info.hasAudio
+      seg._w = info.width
+      seg._h = info.height
+    } catch {
+      seg._hasAudio = false
+    }
+  }
+  // Canvas size: the first clip's dimensions, made even. Other clips are scaled
+  // to fit and letterboxed, so mixed aspect ratios concat cleanly.
+  let W = (segments[0]._w || 1920) - ((segments[0]._w || 1920) % 2)
+  let H = (segments[0]._h || 1080) - ((segments[0]._h || 1080) % 2)
+
+  // Output sizing presets (identical semantics to runExport): a social WxH box
+  // (blur-fill or center-crop) composes with a proportional height cap.
+  const targetWidth = options.targetWidth || null
+  const targetHeight = options.targetHeight || null
+  const capHeight = options.resolution === '1080p' ? 1080
+    : options.resolution === '720p' ? 720
+    : null
+  const fillMode = options.fillMode === 'crop' ? 'crop' : 'blur'
+
+  // Recording audio (mic/system) follows the screen-derived segments; imported
+  // music/SFX overlay the whole timeline. buildRenderModel already excludes
+  // muted tracks, so anything present here should be heard.
+  const recordingAudio = (model.audioSegments || [])
+    .filter((a) => (a.mediaId === 'mic' || a.mediaId === 'system') && a.sourceFile)
+    .map((a) => ({ ...a, _abs: join(projectPath, a.sourceFile) }))
+    .filter((a) => existsSync(a._abs))
+  const importedAudio = (model.audioSegments || [])
+    .filter((a) => a.imported && a.sourceFile)
+    .map((a) => ({ ...a, _abs: join(projectPath, 'assets', a.sourceFile) }))
+    .filter((a) => existsSync(a._abs))
+
+  // Warn (don't silently drop) about content this path can't render yet.
+  const deferred = []
+  if ((model.overlays || []).length) deferred.push(`${model.overlays.length} overlay(s)/caption(s)`)
+  if (model.cards && (model.cards.intro || model.cards.outro)) deferred.push('intro/outro card(s)')
+  if (model.webcam) deferred.push('webcam bubble')
+  if (deferred.length) {
+    console.warn(`Multi-clip export does not yet render: ${deferred.join(', ')} — these are omitted from the output.`)
+  }
+
+  // Resolve encoder options up front (async; can't run inside the executor).
+  let videoCodecOptions = null
+  if (needsVideo && format === 'hevc') videoCodecOptions = await buildHevcVideoOptions(options, crf, options.quality)
+  else if (needsVideo && (format === 'mp4' || (!isGif && !isPng && format !== 'webm'))) {
+    videoCodecOptions = await buildH264VideoOptions(options, crf, options.quality)
+  }
+
+  const outputDir = join(projectPath, 'exports')
+  await mkdir(outputDir, { recursive: true })
+  const safeLabel = (options.label || '').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '')
+  const ext = FORMAT_EXT[format] || 'mp4'
+  const outputPath = join(outputDir, `export${safeLabel ? `-${safeLabel}` : ''}-${Date.now()}.${ext}`)
+
+  return new Promise((resolve, reject) => {
+    let command = ffmpeg()
+    // Inputs 0..N-1 are the video clips, in order.
+    segments.forEach((seg) => { command = command.input(seg._abs) })
+    // Extra audio inputs are appended on demand; the same source file can be
+    // added multiple times (once per screen segment) so we never have to split
+    // a shared input pad across the graph.
+    let nextInputIdx = segments.length
+    const addInput = (absPath) => { command = command.input(absPath); return nextInputIdx++ }
+
+    const filters = []
+    const vParts = []
+    const aParts = []
+
+    segments.forEach((seg, i) => {
+      const speed = seg.speed || 1
+      const sIn = seg.sourceIn
+      const sOut = seg.sourceOut
+      const outDur = (sOut - sIn) / speed
+      const tempo = speed !== 1 ? `,${buildTempoChain(speed)}` : ''
+
+      if (needsVideo) {
+        // Video: trim → reset PTS (with speed) → fit + letterbox to canvas → square SAR.
+        filters.push(
+          `[${i}:v]trim=start=${sIn}:end=${sOut},setpts=(PTS-STARTPTS)/${speed},` +
+          `scale=${W}:${H}:force_original_aspect_ratio=decrease:flags=lanczos,` +
+          `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v${i}]`
+        )
+        vParts.push(`[v${i}]`)
+      }
+
+      if (needsAudio) {
+        const isScreen = media[seg.mediaId] && media[seg.mediaId].kind === 'screen'
+        // apad+atrim forces the segment audio to exactly match the video length
+        // so concat stays in lockstep even if a source stream is slightly short.
+        const fit = `,apad,atrim=duration=${outDur.toFixed(3)},asetpts=PTS-STARTPTS`
+        if (isScreen && recordingAudio.length) {
+          // The screen master carries no audio — pull the separate mic/system
+          // recordings, trimmed to this segment's source window and sped to match.
+          const recLabels = recordingAudio.map((rec, k) => {
+            const idx = addInput(rec._abs)
+            const label = `ra${i}_${k}`
+            filters.push(
+              `[${idx}:a]atrim=start=${sIn}:end=${sOut},asetpts=PTS-STARTPTS${tempo},` +
+              `aformat=sample_rates=48000:channel_layouts=stereo,volume=${rec.volume != null ? rec.volume : 1}[${label}]`
+            )
+            return `[${label}]`
+          })
+          if (recLabels.length > 1) {
+            filters.push(`${recLabels.join('')}amix=inputs=${recLabels.length}:duration=longest:dropout_transition=0:normalize=0${fit}[a${i}]`)
+          } else {
+            filters.push(`${recLabels[0]}aformat=sample_rates=48000:channel_layouts=stereo${fit}[a${i}]`)
+          }
+        } else if (seg._hasAudio) {
+          filters.push(
+            `[${i}:a]atrim=start=${sIn}:end=${sOut},asetpts=PTS-STARTPTS${tempo},` +
+            `aformat=sample_rates=48000:channel_layouts=stereo${fit}[a${i}]`
+          )
+        } else {
+          // Generate matching silence so every concat segment has an audio pad.
+          filters.push(`anullsrc=r=48000:cl=stereo,atrim=duration=${outDur.toFixed(3)},asetpts=PTS-STARTPTS[a${i}]`)
+        }
+        aParts.push(`[a${i}]`)
+      }
+    })
+
+    // Concat (interleaved per segment) — video and/or audio, depending on format.
+    let videoOut = null
+    let audioOut = null
+    if (needsVideo && needsAudio) {
+      const interleaved = segments.map((_, i) => `${vParts[i]}${aParts[i]}`).join('')
+      filters.push(`${interleaved}concat=n=${segments.length}:v=1:a=1[vcat][acat]`)
+      videoOut = 'vcat'; audioOut = 'acat'
+    } else if (needsVideo) {
+      filters.push(`${vParts.join('')}concat=n=${segments.length}:v=1:a=0[vcat]`)
+      videoOut = 'vcat'
+    } else {
+      // Audio-only (mp3/m4a): no video graph at all — concat audio only. This
+      // is what keeps FFmpeg from aborting on an unmapped [vcat] pad.
+      filters.push(`${aParts.join('')}concat=n=${segments.length}:v=0:a=1[acat]`)
+      audioOut = 'acat'
+    }
+
+    // Imported music/SFX beds overlay the whole timeline (output-time coords).
+    if (needsAudio && importedAudio.length && audioOut) {
+      const bedLabels = importedAudio.map((a, k) => {
+        const idx = addInput(a._abs)
+        const delayMs = Math.max(0, Math.round((a.timelineStart || 0) * 1000))
+        const label = `bed${k}`
+        filters.push(
+          `[${idx}:a]aformat=sample_rates=48000:channel_layouts=stereo,` +
+          `volume=${a.volume != null ? a.volume : 0.3},adelay=${delayMs}|${delayMs}[${label}]`
+        )
+        return `[${label}]`
+      })
+      // duration=first keeps the output the length of the concatenated timeline.
+      filters.push(`[${audioOut}]${bedLabels.join('')}amix=inputs=${bedLabels.length + 1}:duration=first:dropout_transition=0:normalize=0[amixed]`)
+      audioOut = 'amixed'
+    }
+
+    // Output reframe / scaling (social preset + height cap), mirrors runExport.
+    if (needsVideo && videoOut) {
+      if (targetWidth && targetHeight) {
+        const tw = targetWidth % 2 === 0 ? targetWidth : targetWidth - 1
+        const th = targetHeight % 2 === 0 ? targetHeight : targetHeight - 1
+        if (tw !== W || th !== H) {
+          const sameAspect = Math.abs(W / H - tw / th) < 0.01
+          if (sameAspect) {
+            filters.push(`[${videoOut}]scale=${tw}:${th}:flags=lanczos,setsar=1[v_reframe]`)
+          } else if (fillMode === 'crop') {
+            filters.push(`[${videoOut}]scale=${tw}:${th}:force_original_aspect_ratio=increase:flags=lanczos,crop=${tw}:${th},setsar=1[v_reframe]`)
+          } else {
+            filters.push(`[${videoOut}]split=2[v_bgsrc][v_fgsrc]`)
+            filters.push(`[v_bgsrc]scale=${tw}:${th}:force_original_aspect_ratio=increase:flags=lanczos,crop=${tw}:${th},boxblur=20:20[v_bg]`)
+            filters.push(`[v_fgsrc]scale=${tw}:${th}:force_original_aspect_ratio=decrease:flags=lanczos[v_fg]`)
+            filters.push(`[v_bg][v_fg]overlay=(W-w)/2:(H-h)/2,setsar=1[v_reframe]`)
+          }
+          videoOut = 'v_reframe'; W = tw; H = th
+        }
+      }
+      if (capHeight && capHeight < H) {
+        const scaledW = Math.round(W * (capHeight / H))
+        W = scaledW % 2 === 0 ? scaledW : scaledW - 1
+        H = capHeight % 2 === 0 ? capHeight : capHeight - 1
+        filters.push(`[${videoOut}]scale=${W}:${H}:flags=lanczos,setsar=1[v_resized]`)
+        videoOut = 'v_resized'
+      }
+    }
+
+    // Loudness normalization runs last, on the fully mixed audio.
+    if (needsAudio && normalizeLoudness && audioOut) {
+      filters.push(`[${audioOut}]loudnorm=I=-14:TP=-1.5:LRA=11[anorm]`)
+      audioOut = 'anorm'
+    }
+
+    // Per-format output adaptation (mirrors runExport's output stage).
+    const outputOptions = []
+    if (isAudioOnly) {
+      const abr = options.quality === 'high' ? '256k' : options.quality === 'small' ? '128k' : '192k'
+      outputOptions.push(`-map [${audioOut}]`)
+      if (format === 'mp3') outputOptions.push('-c:a', 'libmp3lame', '-b:a', abr)
+      else outputOptions.push('-c:a', 'aac', '-b:a', abr, '-movflags', '+faststart')
+    } else if (isPng) {
+      filters.push(`[${videoOut}]trim=start=0,setpts=PTS-STARTPTS[vpng]`)
+      outputOptions.push('-map [vpng]', '-frames:v', '1')
+    } else if (isGif) {
+      filters.push(`[${videoOut}]fps=15,scale=640:-2:flags=lanczos,split[ga][gb]`)
+      filters.push(`[ga]palettegen=stats_mode=diff[gp]`)
+      filters.push(`[gb][gp]paletteuse=dither=bayer:bayer_scale=5[gout]`)
+      outputOptions.push('-map [gout]', '-loop', '0')
+    } else if (format === 'webm') {
+      const vp9crf = VP9_CRF_BY_QUALITY[options.quality] || VP9_CRF_BY_QUALITY.balanced
+      outputOptions.push(`-map [${videoOut}]`, `-map [${audioOut}]`, '-c:v', 'libvpx-vp9',
+        '-crf', String(vp9crf), '-b:v', '0', '-row-mt', '1', '-pix_fmt', 'yuv420p', '-c:a', 'libopus', '-b:a', '128k')
+    } else {
+      // mp4 (H.264) and hevc both map video + AAC audio; videoCodecOptions was
+      // resolved above for whichever encoder this format uses.
+      outputOptions.push(`-map [${videoOut}]`, `-map [${audioOut}]`, ...(videoCodecOptions || []),
+        '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart')
+    }
+
+    command
+      .complexFilter(filters.join(';'))
+      .outputOptions(outputOptions)
+      .output(outputPath)
+      .on('start', (cmd) => console.log('FFmpeg (timeline) command:', cmd))
+      .on('progress', (p) => { if (onProgress && p.percent) onProgress(Math.min(100, Math.round(p.percent))) })
+      .on('end', () => { console.log('FFmpeg timeline export complete:', outputPath); resolve(outputPath) })
+      .on('error', (err, stdout, stderr) => {
+        console.error('FFmpeg (timeline) error:', err.message)
+        if (stderr) console.error('FFmpeg stderr:', stderr)
+        reject(err)
+      })
+      .run()
+  })
 }
 
 /**

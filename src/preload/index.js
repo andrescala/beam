@@ -44,6 +44,7 @@ const electronAPI = {
 
   // Video import
   importVideo: () => ipcRenderer.invoke('import-video'),
+  appendClip: (projectId) => ipcRenderer.invoke('append-clip', projectId),
 
   // SRT export
   exportSrt: (projectId) => ipcRenderer.invoke('export-srt', projectId),
