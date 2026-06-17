@@ -4,6 +4,7 @@ import ffprobeStatic from 'ffprobe-static'
 import { join } from 'path'
 import { existsSync, unlinkSync } from 'fs'
 import { mkdir } from 'fs/promises'
+import { buildRenderModel } from '../shared/render-model.js'
 
 // Fix paths for asar packaging
 const ffmpegPath = ffmpegStatic.replace('app.asar', 'app.asar.unpacked')
@@ -312,6 +313,18 @@ export async function exportMp4(projectPath, project, onProgress, options = {}) 
  */
 async function runExport(projectPath, project, onProgress, options = {}) {
   const format = options.format || 'mp4'
+
+  // Multi-clip timeline routing: if the project's video track stitches clips
+  // from MORE THAN ONE source (an appended/imported clip), use the dedicated
+  // clip-concatenation path. Single-source projects — including all migrated
+  // v1 projects, whose multiple segments are just cuts of one recording — keep
+  // the original fully-featured pipeline below unchanged (guaranteed parity).
+  const routeModel = buildRenderModel(project)
+  const distinctSources = new Set(routeModel.videoSegments.map((s) => s.mediaId))
+  if (distinctSources.size > 1) {
+    return exportTimelineClips(projectPath, project, routeModel, onProgress, options)
+  }
+
   const screenPath = join(projectPath, project.recordings.screen)
   if (!existsSync(screenPath)) {
     throw new Error('Screen recording not found')
@@ -1111,6 +1124,158 @@ async function runExport(projectPath, project, onProgress, options = {}) {
  */
 export async function exportGif(projectPath, project, onProgress, options = {}) {
   return runExport(projectPath, project, onProgress, { ...options, format: 'gif' })
+}
+
+/**
+ * Multi-clip timeline export: concatenate the video clips on the timeline
+ * (which may come from different source files) into one output, each clip
+ * trimmed to its in/out, speed-adjusted, and letterboxed onto a common canvas.
+ * Each clip contributes its own embedded audio (or generated silence if the
+ * source has none), concatenated in lockstep with the video.
+ *
+ * This is the assemble-multiple-clips path. Timeline-global overlays, title
+ * cards and the separate mic/system recording tracks are not yet layered here
+ * (they remain on the single-source pipeline); this delivers the core
+ * stitch-and-export capability and is extended in later steps.
+ *
+ * @param {object} model  the RenderModel (master files) from buildRenderModel
+ */
+async function exportTimelineClips(projectPath, project, model, onProgress, options = {}) {
+  const format = options.format || 'mp4'
+  const segments = model.videoSegments.filter((s) => s.sourceFile)
+  if (segments.length === 0) throw new Error('No clips to export')
+
+  // Resolve absolute source paths and validate they exist.
+  for (const seg of segments) {
+    seg._abs = join(projectPath, seg.sourceFile)
+    if (!existsSync(seg._abs)) throw new Error(`Clip source not found: ${seg.sourceFile}`)
+  }
+
+  // Canvas size: the first clip's (probed) dimensions, made even. Other clips
+  // are scaled to fit and letterboxed, so mixed aspect ratios concat cleanly.
+  const firstInfo = await probeVideo(segments[0]._abs)
+  const W = (firstInfo.width || 1920) - ((firstInfo.width || 1920) % 2)
+  const H = (firstInfo.height || 1080) - ((firstInfo.height || 1080) % 2)
+
+  // Probe each clip's audio presence (needed to decide real audio vs silence).
+  for (const seg of segments) {
+    try {
+      seg._hasAudio = (await probeVideo(seg._abs)).hasAudio
+    } catch {
+      seg._hasAudio = false
+    }
+  }
+
+  const crf = CRF_BY_QUALITY[options.quality] || CRF_BY_QUALITY.balanced
+  const normalizeLoudness = !!options.normalizeLoudness
+  const isGif = format === 'gif'
+  const isAudioOnly = AUDIO_ONLY_FORMATS.has(format)
+  const isPng = format === 'png'
+  const needsAudio = !isPng && !isGif
+
+  // Resolve encoder options up front (async; can't run inside the executor).
+  let videoCodecOptions = null
+  if (format === 'hevc') videoCodecOptions = await buildHevcVideoOptions(options, crf, options.quality)
+  else if (format === 'mp4') videoCodecOptions = await buildH264VideoOptions(options, crf, options.quality)
+
+  const outputDir = join(projectPath, 'exports')
+  await mkdir(outputDir, { recursive: true })
+  const safeLabel = (options.label || '').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '')
+  const ext = FORMAT_EXT[format] || 'mp4'
+  const outputPath = join(outputDir, `export${safeLabel ? `-${safeLabel}` : ''}-${Date.now()}.${ext}`)
+
+  return new Promise((resolve, reject) => {
+    let command = ffmpeg()
+    segments.forEach((seg) => { command = command.input(seg._abs) })
+
+    const filters = []
+    const vParts = []
+    const aParts = []
+
+    segments.forEach((seg, i) => {
+      const speed = seg.speed || 1
+      const sIn = seg.sourceIn
+      const sOut = seg.sourceOut
+      // Video: trim → reset PTS (with speed) → fit + letterbox to canvas → square SAR.
+      filters.push(
+        `[${i}:v]trim=start=${sIn}:end=${sOut},setpts=(PTS-STARTPTS)/${speed},` +
+        `scale=${W}:${H}:force_original_aspect_ratio=decrease:flags=lanczos,` +
+        `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v${i}]`
+      )
+      vParts.push(`[v${i}]`)
+
+      if (needsAudio) {
+        const outDur = (sOut - sIn) / speed
+        if (seg._hasAudio) {
+          const tempo = speed !== 1 ? `,${buildTempoChain(speed)}` : ''
+          filters.push(
+            `[${i}:a]atrim=start=${sIn}:end=${sOut},asetpts=PTS-STARTPTS${tempo},` +
+            `aformat=sample_rates=48000:channel_layouts=stereo[a${i}]`
+          )
+        } else {
+          // Generate matching silence so every concat segment has an audio pad.
+          filters.push(`anullsrc=r=48000:cl=stereo,atrim=duration=${outDur.toFixed(3)},asetpts=PTS-STARTPTS[a${i}]`)
+        }
+        aParts.push(`[a${i}]`)
+      }
+    })
+
+    // Concat (interleaved per segment) — video, plus audio when present.
+    let videoOut, audioOut
+    if (needsAudio) {
+      const interleaved = segments.map((_, i) => `${vParts[i]}${aParts[i]}`).join('')
+      filters.push(`${interleaved}concat=n=${segments.length}:v=1:a=1[vcat][acat]`)
+      videoOut = 'vcat'; audioOut = 'acat'
+      if (normalizeLoudness) {
+        filters.push(`[${audioOut}]loudnorm=I=-14:TP=-1.5:LRA=11[anorm]`)
+        audioOut = 'anorm'
+      }
+    } else {
+      filters.push(`${vParts.join('')}concat=n=${segments.length}:v=1:a=0[vcat]`)
+      videoOut = 'vcat'
+    }
+
+    // Per-format output adaptation (mirrors runExport's output stage).
+    const outputOptions = []
+    if (isAudioOnly) {
+      const abr = options.quality === 'high' ? '256k' : options.quality === 'small' ? '128k' : '192k'
+      outputOptions.push(`-map [${audioOut}]`)
+      if (format === 'mp3') outputOptions.push('-c:a', 'libmp3lame', '-b:a', abr)
+      else outputOptions.push('-c:a', 'aac', '-b:a', abr, '-movflags', '+faststart')
+    } else if (isPng) {
+      filters.push(`[${videoOut}]trim=start=0,setpts=PTS-STARTPTS[vpng]`)
+      outputOptions.push('-map [vpng]', '-frames:v', '1')
+    } else if (isGif) {
+      filters.push(`[${videoOut}]fps=15,scale=640:-2:flags=lanczos,split[ga][gb]`)
+      filters.push(`[ga]palettegen=stats_mode=diff[gp]`)
+      filters.push(`[gb][gp]paletteuse=dither=bayer:bayer_scale=5[gout]`)
+      outputOptions.push('-map [gout]', '-loop', '0')
+    } else if (format === 'webm') {
+      const vp9crf = VP9_CRF_BY_QUALITY[options.quality] || VP9_CRF_BY_QUALITY.balanced
+      outputOptions.push(`-map [${videoOut}]`, `-map [${audioOut}]`, '-c:v', 'libvpx-vp9',
+        '-crf', String(vp9crf), '-b:v', '0', '-row-mt', '1', '-pix_fmt', 'yuv420p', '-c:a', 'libopus', '-b:a', '128k')
+    } else if (format === 'hevc') {
+      outputOptions.push(`-map [${videoOut}]`, `-map [${audioOut}]`, ...videoCodecOptions,
+        '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart')
+    } else {
+      outputOptions.push(`-map [${videoOut}]`, `-map [${audioOut}]`, ...videoCodecOptions,
+        '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart')
+    }
+
+    command
+      .complexFilter(filters.join(';'))
+      .outputOptions(outputOptions)
+      .output(outputPath)
+      .on('start', (cmd) => console.log('FFmpeg (timeline) command:', cmd))
+      .on('progress', (p) => { if (onProgress && p.percent) onProgress(Math.min(100, Math.round(p.percent))) })
+      .on('end', () => { console.log('FFmpeg timeline export complete:', outputPath); resolve(outputPath) })
+      .on('error', (err, stdout, stderr) => {
+        console.error('FFmpeg (timeline) error:', err.message)
+        if (stderr) console.error('FFmpeg stderr:', stderr)
+        reject(err)
+      })
+      .run()
+  })
 }
 
 /**

@@ -166,4 +166,37 @@ function v1Fixture() {
   ok('simple no-cuts project yields one full clip')
 }
 
+// ── Test 10: export routing predicate (single-source vs multi-clip) ──
+{
+  // A migrated v1 project (cuts of one recording) is still single-source.
+  const v1 = v1Fixture()
+  const m1 = buildRenderModel(migrateProjectToV2(v1))
+  const sources1 = new Set(m1.videoSegments.map((s) => s.mediaId))
+  assert.equal(sources1.size, 1, 'v1 cuts stay single-source (route to original pipeline)')
+  assert.equal([...sources1][0], 'screen')
+
+  // A v2 project with clips from two media is multi-clip.
+  const v2 = {
+    id: 'mc', schemaVersion: 2,
+    media: {
+      screen: { id: 'screen', kind: 'screen', master: 'a.webm', proxy: 'a.webm' },
+      import1: { id: 'import1', kind: 'import', master: 'b.mp4', proxy: 'b.mp4' }
+    },
+    timeline: {
+      videoTrack: [
+        { id: 'c1', mediaId: 'screen', sourceIn: 0, sourceOut: 2, timelineStart: 0, speed: 1 },
+        { id: 'c2', mediaId: 'import1', sourceIn: 0, sourceOut: 3, timelineStart: 2, speed: 1 }
+      ],
+      overlayTracks: [], audioTracks: [], webcam: null
+    },
+    edit: {}, cards: { intro: null, outro: null }
+  }
+  const m2 = buildRenderModel(v2)
+  const sources2 = new Set(m2.videoSegments.map((s) => s.mediaId))
+  assert.equal(sources2.size, 2, 'two-media timeline is multi-clip (route to clip-concat)')
+  // duration = 2 + 3 (both speed 1)
+  assert.ok(Math.abs(m2.duration - 5) < 1e-9, 'multi-clip duration sums clip out-durations')
+  ok('export routing: single-source vs multi-clip is distinguishable from the model')
+}
+
 console.log(`\n${passed} render-model tests passed`)
