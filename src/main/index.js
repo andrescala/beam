@@ -18,7 +18,8 @@ import {
   exportSrt,
   exportVtt,
   importProjectZip,
-  importVideoAsProject
+  importVideoAsProject,
+  appendClipToProject
 } from './projects.js'
 import { generateThumbnail, exportMp4, exportGif, extractAudio, detectSilence } from './ffmpeg.js'
 import { transcribeAudio, isWhisperAvailable } from './transcribe.js'
@@ -593,6 +594,26 @@ function registerIpcHandlers() {
       if (result.canceled || result.filePaths.length === 0) return null
 
       const project = await importVideoAsProject(result.filePaths[0], (percent) => {
+        if (mainWindow) {
+          mainWindow.webContents.send('import-progress', percent)
+        }
+      })
+      return { project }
+    } catch (err) {
+      return { error: err.message }
+    }
+  })
+
+  // Append an external video as a new clip on an existing project's timeline.
+  ipcMain.handle('append-clip', async (_event, projectId) => {
+    try {
+      const result = await dialog.showOpenDialog(mainWindow, {
+        properties: ['openFile'],
+        filters: [{ name: 'Video Files', extensions: ['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v'] }]
+      })
+      if (result.canceled || result.filePaths.length === 0) return null
+
+      const project = await appendClipToProject(projectId, result.filePaths[0], (percent) => {
         if (mainWindow) {
           mainWindow.webContents.send('import-progress', percent)
         }

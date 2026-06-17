@@ -447,6 +447,43 @@ function Timeline({ project, projectId, currentTime, onSeek, onTrimChange, onCut
           </div>
         </div>
 
+        {/* Multi-clip strip — read-only overview of the timeline's video clips,
+            shown once a second clip has been appended. Per-clip editing (drag,
+            split, reorder) is part of the full timeline rewrite; this surfaces
+            the assembled sequence and is what the multi-clip exporter renders. */}
+        {(project.timeline?.videoTrack?.length || 0) > 1 && (() => {
+          const clips = project.timeline.videoTrack
+          const total = clips.reduce((max, c) => {
+            const outDur = (c.sourceOut - c.sourceIn) / (c.speed || 1)
+            return Math.max(max, c.timelineStart + outDur)
+          }, 0) || 1
+          return (
+            <div className={styles.trackRow}>
+              <div className={styles.trackLabel}>
+                <div className={styles.trackDot} style={{ background: '#c084fc' }} />
+                Clips ({clips.length})
+              </div>
+              <div className={styles.track} style={{ cursor: 'default' }}>
+                {clips.map((c, i) => {
+                  const outDur = (c.sourceOut - c.sourceIn) / (c.speed || 1)
+                  const left = (c.timelineStart / total) * 100
+                  const width = (outDur / total) * 100
+                  return (
+                    <div
+                      key={c.id || i}
+                      className={`${styles.clip} ${styles.screenClip}`}
+                      style={{ position: 'absolute', left: `${left}%`, width: `${width}%`, top: 4, bottom: 4, opacity: 0.9 }}
+                      title={`Clip ${i + 1}: ${(c.mediaId || 'video')} (${outDur.toFixed(1)}s${c.speed && c.speed !== 1 ? ` @ ${c.speed}x` : ''})`}
+                    >
+                      {i + 1}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )
+        })()}
+
         {/* Audio track (recording mic) */}
         {project.recordings?.mic && (
           <div className={styles.trackRow}>

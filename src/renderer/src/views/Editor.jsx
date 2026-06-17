@@ -26,6 +26,7 @@ function Editor() {
   const [exporting, setExporting] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
   const [bottomTab, setBottomTab] = useState('timeline') // timeline, layers, assets, captions, transcript
+  const [addingClip, setAddingClip] = useState(false)
   const videoRef = useRef(null)
 
   // Undo/redo history. Kept in refs (not state) so pushes from rapid slider
@@ -67,6 +68,29 @@ function Editor() {
       showToast('error', 'Failed to load project')
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function handleAddClip() {
+    setAddingClip(true)
+    try {
+      const result = await window.electronAPI.appendClip(projectId)
+      if (!result) return // dialog cancelled
+      if (result.error) {
+        showToast('error', `Couldn't add clip: ${result.error}`)
+        return
+      }
+      // Reload from disk so the new media + timeline clip are reflected, and
+      // reset history (the timeline structure changed underneath it).
+      setProject(result.project)
+      projectRef.current = result.project
+      historyRef.current = { past: [], future: [] }
+      setHistoryVersion((v) => v + 1)
+      showToast('success', 'Clip added to the timeline')
+    } catch (err) {
+      showToast('error', "Couldn't add clip")
+    } finally {
+      setAddingClip(false)
     }
   }
 
@@ -260,6 +284,15 @@ function Editor() {
           </button>
           <button className={styles.helpBtn} onClick={() => setHelpOpen(true)} title="Help & tutorials">
             ?
+          </button>
+          <button
+            className={styles.helpBtn}
+            onClick={handleAddClip}
+            disabled={addingClip}
+            title="Append another video to the timeline"
+            style={{ width: 'auto', padding: '0 10px' }}
+          >
+            {addingClip ? '…' : '+ Clip'}
           </button>
           <button className={styles.exportBtn} onClick={() => setExporting(true)}>
             Export
