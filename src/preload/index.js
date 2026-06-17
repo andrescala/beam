@@ -18,6 +18,13 @@ const electronAPI = {
   saveRawRecording: (projectId, type, buffer) =>
     ipcRenderer.invoke('save-raw-recording', projectId, type, buffer),
 
+  // Crash-safe streaming recording (R8)
+  appendRecordingChunk: (projectId, type, arrayBuffer) =>
+    ipcRenderer.invoke('capture-append-chunk', projectId, type, arrayBuffer),
+  finalizeRecording: (projectId, type) =>
+    ipcRenderer.invoke('capture-finalize', projectId, type),
+  listRecoverableCaptures: () => ipcRenderer.invoke('list-recoverable-captures'),
+
   // Assets
   importAsset: (projectId, type) => ipcRenderer.invoke('import-asset', projectId, type),
   listAssets: (projectId) => ipcRenderer.invoke('list-assets', projectId),
@@ -41,6 +48,18 @@ const electronAPI = {
   // SRT export
   exportSrt: (projectId) => ipcRenderer.invoke('export-srt', projectId),
 
+  // WebVTT export
+  exportVtt: (projectId) => ipcRenderer.invoke('export-vtt', projectId),
+
+  // AI copilot (BYO Claude key)
+  aiHasKey: () => ipcRenderer.invoke('ai-has-key'),
+  aiGetKey: () => ipcRenderer.invoke('ai-get-key'),
+  aiSetKey: (key) => ipcRenderer.invoke('ai-set-key', key),
+  aiGenerateMetadata: (args) => ipcRenderer.invoke('ai-generate-metadata', args),
+  aiGenerateChapters: (args) => ipcRenderer.invoke('ai-generate-chapters', args),
+  aiSuggestHighlights: (args) => ipcRenderer.invoke('ai-suggest-highlights', args),
+  aiEditByPrompt: (args) => ipcRenderer.invoke('ai-edit-by-prompt', args),
+
   // Project backup/import
   exportProjectZip: (projectId) => ipcRenderer.invoke('export-project-zip', projectId),
   importProjectZip: () => ipcRenderer.invoke('import-project-zip'),
@@ -52,6 +71,13 @@ const electronAPI = {
   // Preferences
   getPreferences: () => ipcRenderer.invoke('get-preferences'),
   setPreferences: (patch) => ipcRenderer.invoke('set-preferences', patch),
+
+  // Storage
+  getProjectsDir: () => ipcRenderer.invoke('get-projects-dir'),
+  getStorageUsage: () => ipcRenderer.invoke('get-storage-usage'),
+
+  // Auto-update
+  checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
 
   // Events from main process
   onExportProgress: (callback) => {
@@ -78,6 +104,21 @@ const electronAPI = {
     const handler = (_event, percent) => callback(percent)
     ipcRenderer.on('import-progress', handler)
     return () => ipcRenderer.removeListener('import-progress', handler)
+  },
+  onUpdateAvailable: (callback) => {
+    const handler = (_event, info) => callback(info)
+    ipcRenderer.on('update-available', handler)
+    return () => ipcRenderer.removeListener('update-available', handler)
+  },
+  onUpdateDownloaded: (callback) => {
+    const handler = (_event, info) => callback(info)
+    ipcRenderer.on('update-downloaded', handler)
+    return () => ipcRenderer.removeListener('update-downloaded', handler)
+  },
+  onRecoverableCaptures: (callback) => {
+    const handler = (_event, list) => callback(list)
+    ipcRenderer.on('recoverable-captures', handler)
+    return () => ipcRenderer.removeListener('recoverable-captures', handler)
   }
 }
 

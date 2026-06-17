@@ -1,9 +1,10 @@
 import { app, shell, BrowserWindow, ipcMain, desktopCapturer, systemPreferences, dialog, session, protocol, Tray, Menu, globalShortcut, nativeImage } from 'electron'
 import { join } from 'path'
-import { readFile } from 'fs/promises'
+import { readFile, readdir, stat } from 'fs/promises'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import {
   ensureProjectsDir,
+  getProjectsDir,
   getProjectPath,
   createProject,
   loadProject,
@@ -15,6 +16,7 @@ import {
   listAssets,
   deleteAsset,
   exportSrt,
+  exportVtt,
   importProjectZip,
   importVideoAsProject
 } from './projects.js'
@@ -22,6 +24,16 @@ import { generateThumbnail, exportMp4, exportGif, extractAudio, detectSilence } 
 import { transcribeAudio, isWhisperAvailable } from './transcribe.js'
 import { getWhisperStatus, downloadModel, ensureWhisperReady, onStatusChange } from './whisper-manager.js'
 import { getPreferences, setPreferences } from './preferences.js'
+import { appendChunk, finalizeCapture, findRecoverableCaptures } from './capture-store.js'
+import {
+  getClaudeApiKey,
+  setClaudeApiKey,
+  hasClaudeApiKey,
+  generateMetadata,
+  generateChapters,
+  suggestHighlights,
+  editByPrompt
+} from './ai.js'
 
 // Force Chromium to use software H.264 decoding. macOS VideoToolbox
 // occasionally throws -12909 (VTDecompressionOutputCallback) on otherwise
@@ -82,6 +94,77 @@ function registerGlobalShortcuts() {
     })
   } catch (err) {
     console.warn('Global shortcut registration failed:', err.message)
+  }
+}
+
+// ── Auto-update (electron-updater) ──
+// Loaded lazily so a missing/broken module never crashes startup.
+let autoUpdater = null
+let autoUpdaterWired = false
+
+async function getAutoUpdater() {
+  if (autoUpdater) return autoUpdater
+  try {
+    const mod = await import('electron-updater')
+    autoUpdater = mod.autoUpdater || mod.default?.autoUpdater || mod.default
+    return autoUpdater
+  } catch (err) {
+    console.warn('electron-updater unavailable:', err.message)
+    return null
+  }
+}
+
+function sendToRenderer(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, payload)
+  }
+}
+
+async function setupAutoUpdater() {
+  // Never run in dev or when not packaged — there is nothing to update against.
+  if (is.dev || !app.isPackaged) return
+  if (autoUpdaterWired) return
+  try {
+    const updater = await getAutoUpdater()
+    if (!updater) return
+
+    try {
+      const prefs = getPreferences()
+      if (prefs.updateChannel) updater.channel = prefs.updateChannel
+    } catch {
+      // Pref access is best-effort
+    }
+
+    updater.autoDownload = true
+    updater.on('update-available', (info) => {
+      sendToRenderer('update-available', { version: info?.version })
+    })
+    updater.on('update-downloaded', (info) => {
+      sendToRenderer('update-downloaded', { version: info?.version })
+    })
+    updater.on('error', (err) => {
+      console.warn('autoUpdater error:', err?.message || err)
+    })
+
+    autoUpdaterWired = true
+  } catch (err) {
+    console.warn('Auto-updater setup failed:', err.message)
+  }
+}
+
+async function triggerUpdateCheck() {
+  if (is.dev || !app.isPackaged) {
+    return { ok: false, reason: 'dev-or-unpackaged' }
+  }
+  try {
+    await setupAutoUpdater()
+    const updater = await getAutoUpdater()
+    if (!updater) return { ok: false, reason: 'unavailable' }
+    await updater.checkForUpdates()
+    return { ok: true }
+  } catch (err) {
+    console.warn('checkForUpdates failed:', err.message)
+    return { ok: false, reason: err.message }
   }
 }
 
@@ -223,6 +306,21 @@ function registerIpcHandlers() {
     return await saveRawRecording(projectId, type, buffer)
   })
 
+  // Crash-safe streaming (R8): append each MediaRecorder chunk to disk as it
+  // arrives so a crash mid-recording can't lose everything.
+  ipcMain.handle('capture-append-chunk', async (_event, projectId, type, arrayBuffer) => {
+    return await appendChunk(projectId, type, arrayBuffer)
+  })
+
+  ipcMain.handle('capture-finalize', async (_event, projectId, type) => {
+    return await finalizeCapture(projectId, type)
+  })
+
+  // Detect orphaned in-progress captures left by a crash (recovery).
+  ipcMain.handle('list-recoverable-captures', async () => {
+    return await findRecoverableCaptures()
+  })
+
   // Asset import (images, audio files)
   ipcMain.handle('import-asset', async (_event, projectId, type) => {
     const filters = type === 'audio'
@@ -270,11 +368,16 @@ function registerIpcHandlers() {
         }
       }
 
+      // All visual + audio-only formats run through the unified export
+      // pipeline (exportMp4 → runExport), selected via the `format` field on
+      // the options object. exportGif is kept as a thin alias for GIF.
+      // Supported: mp4 | hevc | webm | gif | mp3 | m4a | png
+      const opts = { ...(options || {}), format }
       let outputPath
       if (format === 'gif') {
-        outputPath = await exportGif(projectPath, project, progressCallback)
+        outputPath = await exportGif(projectPath, project, progressCallback, opts)
       } else {
-        outputPath = await exportMp4(projectPath, project, progressCallback, options || {})
+        outputPath = await exportMp4(projectPath, project, progressCallback, opts)
       }
 
       // Update project with last export path
@@ -312,6 +415,53 @@ function registerIpcHandlers() {
     } catch (err) {
       return { error: err.message }
     }
+  })
+
+  // WebVTT export
+  ipcMain.handle('export-vtt', async (_event, projectId) => {
+    try {
+      const outputPath = await exportVtt(projectId)
+      return { path: outputPath }
+    } catch (err) {
+      return { error: err.message }
+    }
+  })
+
+  // AI copilot (BYO Claude key). All handlers are consent-gated: they only run
+  // when the renderer explicitly calls them, and they no-op (NO_API_KEY) when
+  // no key is configured. Transcript text is sent to Anthropic for the request.
+  ipcMain.handle('ai-has-key', async () => {
+    return { hasKey: hasClaudeApiKey() }
+  })
+
+  ipcMain.handle('ai-get-key', async () => {
+    // Return only whether a key exists plus a masked hint — never the raw key.
+    const key = getClaudeApiKey()
+    return { hasKey: !!key, hint: key ? `…${key.slice(-4)}` : '' }
+  })
+
+  ipcMain.handle('ai-set-key', async (_event, key) => {
+    try {
+      return setClaudeApiKey(key)
+    } catch (err) {
+      return { error: err.message }
+    }
+  })
+
+  ipcMain.handle('ai-generate-metadata', async (_event, args) => {
+    return await generateMetadata(args || {})
+  })
+
+  ipcMain.handle('ai-generate-chapters', async (_event, args) => {
+    return await generateChapters(args || {})
+  })
+
+  ipcMain.handle('ai-suggest-highlights', async (_event, args) => {
+    return await suggestHighlights(args || {})
+  })
+
+  ipcMain.handle('ai-edit-by-prompt', async (_event, args) => {
+    return await editByPrompt(args || {})
   })
 
   // Project backup/import
@@ -489,6 +639,59 @@ function registerIpcHandlers() {
   ipcMain.handle('set-preferences', async (_event, patch) => {
     return setPreferences(patch)
   })
+
+  // Storage — the absolute path where projects are stored
+  ipcMain.handle('get-projects-dir', async () => {
+    return getProjectsDir()
+  })
+
+  // Storage — total bytes used by all project folders
+  ipcMain.handle('get-storage-usage', async () => {
+    try {
+      const dir = getProjectsDir()
+      const entries = await readdir(dir, { withFileTypes: true })
+      let total = 0
+      let count = 0
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue
+        total += await dirSize(join(dir, entry.name))
+        count += 1
+      }
+      return { bytes: total, projectCount: count }
+    } catch (err) {
+      return { bytes: 0, projectCount: 0, error: err.message }
+    }
+  })
+
+  // Auto-update — manual check trigger (no-op in dev / unpackaged)
+  ipcMain.handle('check-for-updates', async () => {
+    return await triggerUpdateCheck()
+  })
+}
+
+// Recursively sum the size of every file under a directory.
+async function dirSize(dirPath) {
+  let total = 0
+  let entries
+  try {
+    entries = await readdir(dirPath, { withFileTypes: true })
+  } catch {
+    return 0
+  }
+  for (const entry of entries) {
+    const full = join(dirPath, entry.name)
+    try {
+      if (entry.isDirectory()) {
+        total += await dirSize(full)
+      } else if (entry.isFile()) {
+        const s = await stat(full)
+        total += s.size
+      }
+    } catch {
+      // Skip unreadable entries
+    }
+  }
+  return total
 }
 
 async function collectFilesForArchive(basePath, currentPath, files, rf, rd) {
@@ -579,6 +782,26 @@ if (!gotTheLock) {
     await ensureProjectsDir()
     registerIpcHandlers()
 
+    // Crash recovery (R8): scan for captures interrupted by a crash and push
+    // the list to the renderer once it's ready. The renderer can also pull it
+    // on demand via the `list-recoverable-captures` IPC.
+    findRecoverableCaptures()
+      .then((recoverable) => {
+        if (recoverable.length === 0) return
+        console.log(`Found ${recoverable.length} recoverable recording(s) from a previous session`)
+        const send = () => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('recoverable-captures', recoverable)
+          }
+        }
+        if (mainWindow && mainWindow.webContents.isLoading()) {
+          mainWindow.webContents.once('did-finish-load', send)
+        } else {
+          send()
+        }
+      })
+      .catch((err) => console.warn('Recovery scan failed:', err.message))
+
     // Forward whisper model-download status changes to the renderer chip
     onStatusChange((status) => {
       if (mainWindow && !mainWindow.isDestroyed()) {
@@ -608,6 +831,11 @@ if (!gotTheLock) {
     createWindow()
     createTray()
     registerGlobalShortcuts()
+
+    // Check for updates once on launch (guarded: no-ops in dev / unpackaged).
+    triggerUpdateCheck().catch((err) => {
+      console.warn('Initial update check failed:', err.message)
+    })
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()

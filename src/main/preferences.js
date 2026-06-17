@@ -5,11 +5,16 @@ const schema = {
   defaultQuality: { type: 'string', default: 'balanced' },
   webcamEnabled: { type: 'boolean', default: true },
   systemAudioEnabled: { type: 'boolean', default: false },
+  fps: { type: 'number', default: 30 },
   micDeviceId: { type: 'string', default: '' },
   cameraDeviceId: { type: 'string', default: '' },
   webcamPosition: { type: 'string', default: 'bottom-right' },
   webcamShape: { type: 'string', default: 'circle' },
   countdownDuration: { type: 'number', default: 3 },
+  normalizeLoudness: { type: 'boolean', default: false },
+  claudeApiKey: { type: 'string', default: '' },
+  updateChannel: { type: 'string', default: 'latest' },
+  theme: { type: 'string', default: 'dark' },
   windowBounds: {
     type: 'object',
     default: { width: 1200, height: 800 }

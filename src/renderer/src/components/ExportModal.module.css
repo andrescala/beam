@@ -53,6 +53,17 @@
   margin-bottom: 16px;
 }
 
+.formatGrid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.formatGrid .formatBtn {
+  padding: 10px 4px;
+}
+
 .formatBtn {
   flex: 1;
   display: flex;

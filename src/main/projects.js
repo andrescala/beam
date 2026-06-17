@@ -3,6 +3,7 @@ import { join, basename } from 'path'
 import { readdir, readFile, writeFile, mkdir, rm, copyFile, rename } from 'fs/promises'
 import { existsSync } from 'fs'
 import { v4 as uuid } from 'uuid'
+import { migrateProjectToV2 } from '../shared/render-model.js'
 
 /**
  * Write a file atomically: write to a temp sibling, then rename into place.
@@ -80,6 +81,10 @@ export async function createProject(name) {
       imageLayers: [],
       audioLayers: [],
       captions: [],
+      // Word/segment-level transcript from Whisper, kept separate from the
+      // captions so transcript-based editing and the AI features can persist
+      // it. Schema: { segments: [{ start, end, text }], generatedAt: ISO }
+      transcript: null,
       introCard: null,
       outroCard: null
     },
@@ -129,6 +134,7 @@ export async function loadProject(id) {
   if (project.edit.systemVolume === undefined) project.edit.systemVolume = 1.0
   if (project.edit.systemMuted === undefined) project.edit.systemMuted = false
   if (project.edit.audioOffsetMs === undefined) project.edit.audioOffsetMs = 0
+  if (project.edit.transcript === undefined) project.edit.transcript = null
   if (project.recordings && project.recordings.mic === undefined) project.recordings.mic = null
   if (project.recordings && project.recordings.system === undefined) project.recordings.system = null
   // Pre-master/proxy-split projects: the single screen.webm was already
@@ -138,6 +144,27 @@ export async function loadProject(id) {
   }
   if (project.recordings && project.recordings.webcamProxy === undefined) {
     project.recordings.webcamProxy = project.recordings.webcam
+  }
+
+  // ── Schema v2 migration (multi-track timeline) ──
+  // Non-destructive: adds `media` + `timeline` derived from the legacy `edit`,
+  // keeping `edit`/`recordings` intact so existing renderers keep working.
+  // A one-time .v1.bak snapshot is written before persisting the upgrade.
+  if (project.schemaVersion !== 2) {
+    try {
+      const bakPath = join(projectPath, 'project.v1.bak.json')
+      if (!existsSync(bakPath)) {
+        await writeFile(bakPath, JSON.stringify(project, null, 2))
+      }
+      const migrated = migrateProjectToV2(project)
+      await writeFile(join(projectPath, 'project.json'), JSON.stringify(migrated, null, 2))
+      return migrated
+    } catch (err) {
+      // If migration fails, return the v1 project untouched — the app still
+      // works off the legacy fields, and we retry on next load.
+      console.warn(`Schema v2 migration failed for ${id}, staying on v1:`, err.message)
+      return project
+    }
   }
 
   return project
@@ -411,12 +438,47 @@ export async function exportSrt(projectId) {
   return outputPath
 }
 
+// WebVTT export — mirrors exportSrt but uses the WebVTT format: a
+// "WEBVTT" header, '.' (not ',') as the millisecond separator, and no cue
+// numbers required (we omit them; '-->' separates the timestamps).
+export async function exportVtt(projectId) {
+  const project = await loadProject(projectId)
+  const captions = project.edit?.captions || []
+
+  if (captions.length === 0) {
+    throw new Error('No captions to export')
+  }
+
+  // Sort captions by start time
+  const sorted = [...captions].sort((a, b) => a.startTime - b.startTime)
+
+  let vtt = 'WEBVTT\n\n'
+  sorted.forEach((caption) => {
+    vtt += `${formatVttTime(caption.startTime)} --> ${formatVttTime(caption.endTime)}\n`
+    vtt += `${caption.text}\n\n`
+  })
+
+  const projectPath = getProjectPath(projectId)
+  const outputPath = join(projectPath, 'exports', 'captions.vtt')
+  await mkdir(join(projectPath, 'exports'), { recursive: true })
+  await writeFile(outputPath, vtt, 'utf-8')
+  return outputPath
+}
+
 function formatSrtTime(seconds) {
   const h = Math.floor(seconds / 3600)
   const m = Math.floor((seconds % 3600) / 60)
   const s = Math.floor(seconds % 60)
   const ms = Math.min(999, Math.round((seconds % 1) * 1000))
   return `${pad(h, 2)}:${pad(m, 2)}:${pad(s, 2)},${pad(ms, 3)}`
+}
+
+function formatVttTime(seconds) {
+  const h = Math.floor(seconds / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  const s = Math.floor(seconds % 60)
+  const ms = Math.min(999, Math.round((seconds % 1) * 1000))
+  return `${pad(h, 2)}:${pad(m, 2)}:${pad(s, 2)}.${pad(ms, 3)}`
 }
 
 function pad(n, len) {

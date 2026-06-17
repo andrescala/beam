@@ -117,7 +117,13 @@ The four 🔴 foundation items that everything else builds on, plus cheap wins:
 2. ✅ **R1** System audio capture (the handler already supports loopback; renderer work mostly).
 3. ✅ **E3** Undo/redo command stack (do *before* the timeline rewrite so all new features inherit it).
 4. ✅ **C1** *(amended per product decision: the model stays OUT of the bundle)* — Whisper model auto-downloads on first transcription, with a status chip (installed / downloading % / failed-retry / not-installed) that's clickable to trigger or retry. The engine (whisper-cpp or openai-whisper) remains a one-time user install.
-5. ✅ Quick wins: R3 (device pickers), R5 (1080p webcam), R6 (tray + hotkey), E6 (shortcuts), A4 (loudnorm), X3-partial (CRF quality + resolution scaling; hardware encoding still open). Bonus: bundled ffprobe (probing previously depended on a system install), fixed intro/outro concat stream ordering, fixed zoompan undoing speed changes.
+5. ✅ Quick wins: R3 (device pickers), R5 (1080p webcam), R6 (tray + hotkey), E6 (shortcuts), A4 (loudnorm), X3-partial (CRF quality + resolution scaling). Bonus: bundled ffprobe (probing previously depended on a system install), fixed intro/outro concat stream ordering, fixed zoompan undoing speed changes.
+
+### Wave-3 batch (v3 branch `claude/beam-v3`) — landed
+- ✅ **R4** Region (drag-rectangle) capture · ✅ **R9** 60 fps option · ✅ **R8** crash-safe chunked recording (stream chunks to disk during capture + recovery scan on launch).
+- ✅ **X3** Hardware-accelerated encoding (VideoToolbox/NVENC/QSV probe + libx264/libx265 fallback) · ✅ **X5** HEVC/WebM/MP3/M4A/PNG export · ✅ **X4** GIF now runs the full filter graph (includes overlays/effects).
+- ✅ Settings screen · ✅ auto-update (electron-updater, guarded) · ✅ Home search/sort/tags + storage usage.
+- ✅ **C2** Transcript-based editing (segment-granular) · ✅ **C3** filler-word removal · ✅ VTT export · ✅ **C5** AI copilot (BYO Claude key: titles/chapters/highlights/edit-by-prompt, consent-gated).
 
 ### P1 — Become a real editor (Phase B) → unlocks "edit videos not recorded here"
 6. ✅ **E1** External video import — implemented as "Import Video" on Home: any MP4/MOV/WebM/MKV becomes a project (master kept untouched, seekable proxy with audio, thumbnail), so the full single-clip editor and export pipeline work on external footage. Multi-clip composition arrives with E2.
@@ -132,9 +138,14 @@ The four 🔴 foundation items that everything else builds on, plus cheap wins:
 13. C4 caption styles, X6 keyframed reframe, L3 webcam-as-layer.
 
 ### P3 — AI differentiation (Phase D)
-13. **R7** Event capture (native module) → **L5** auto-zoom/click effects/cursor smoothing — the "Screen Studio killer" features.
-14. **C2** Transcript-based editing + **C3** filler-word removal — the "Descript killer" features.
-15. C5 titles/chapters/highlights/edit-by-prompt (BYO Claude key), C6 smart reframe.
+13. **R7** Event capture (native module) → **L5** auto-zoom/click effects/cursor smoothing — the "Screen Studio killer" features. (Wave 4)
+14. ✅ **C2** Transcript-based editing + ✅ **C3** filler-word removal — the "Descript killer" features (segment-granular; word-level pending word timestamps).
+15. ✅ C5 titles/chapters/highlights/edit-by-prompt (BYO Claude key) · C6 smart reframe (Wave 4).
+
+### Remaining after the v3 branch
+- **Wave 2 (next):** E2 multi-track/multi-clip timeline + E4 unified preview/export compositor — the editor-core rewrite. Enables E5 waveforms, E7 transitions, E8 speed ramps, E9 on-canvas drag.
+- **Wave 3:** L4 backgrounds/padding, L1 shapes/arrows/redaction, L2 text animation+fonts, L6 per-segment blur/vignette, C4 caption style presets, L3 webcam-as-layer, X6 keyframable reframe.
+- **Wave 4:** R7 event capture → L5 auto-zoom/click ripples/cursor smoothing, C6 smart reframe, A5 voiceover punch-in.
 
 ### Explicitly deferred
 Studio-voice TTS (model size + misuse review), translation, Linux-first polish, live streaming (out of scope for the product vision).

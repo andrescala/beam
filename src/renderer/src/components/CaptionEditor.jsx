@@ -92,6 +92,24 @@ function CaptionEditor({ project, projectId, currentTime, onEditChange }) {
     }
   }
 
+  async function handleExportVtt() {
+    if (captions.length === 0) {
+      showToast('warning', 'No captions to export')
+      return
+    }
+    try {
+      const result = await window.electronAPI.exportVtt(projectId)
+      if (result.error) {
+        showToast('error', result.error)
+        return
+      }
+      showToast('success', 'WebVTT file exported')
+      window.electronAPI.showInFolder(result.path)
+    } catch (err) {
+      showToast('error', 'Failed to export VTT')
+    }
+  }
+
   return (
     <div className={styles.editor}>
       <div className={styles.header}>
@@ -112,6 +130,11 @@ function CaptionEditor({ project, projectId, currentTime, onEditChange }) {
           {captions.length > 0 && (
             <button className={styles.actionBtn} onClick={handleExportSrt} title="Export as SRT subtitle file">
               Export SRT
+            </button>
+          )}
+          {captions.length > 0 && (
+            <button className={styles.actionBtn} onClick={handleExportVtt} title="Export as WebVTT subtitle file">
+              Export VTT
             </button>
           )}
         </div>
