@@ -3,7 +3,7 @@ import { join, basename } from 'path'
 import { readdir, readFile, writeFile, mkdir, rm, copyFile, rename } from 'fs/promises'
 import { existsSync } from 'fs'
 import { v4 as uuid } from 'uuid'
-import { migrateProjectToV2 } from '../shared/render-model.js'
+import { migrateProjectToV2, buildRenderModel } from '../shared/render-model.js'
 
 /**
  * Write a file atomically: write to a temp sibling, then rename into place.
@@ -357,12 +357,12 @@ export async function appendClipToProject(projectId, sourcePath, onProgress) {
     hasAudio: info.hasAudio, width: info.width, height: info.height, duration: info.duration
   }
 
-  // Place the clip at the current timeline end.
+  // Place the clip at the current timeline end. buildRenderModel already
+  // computes the timeline duration (max of every clip's timelineStart + its
+  // speed-adjusted out-duration) — reuse it so this stays in step with what the
+  // exporter renders rather than re-deriving the same formula here.
   const track = project.timeline.videoTrack
-  const end = track.reduce((max, c) => {
-    const outDur = (c.sourceOut - c.sourceIn) / (c.speed || 1)
-    return Math.max(max, c.timelineStart + outDur)
-  }, 0)
+  const end = buildRenderModel(project).duration
   track.push({
     id: `clip-${uuid().slice(0, 8)}`,
     mediaId,
