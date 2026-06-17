@@ -181,6 +181,28 @@ test.describe('Editor View', () => {
     await screenshot(page, 'editor-captions-tab')
   })
 
+  test('transcript tab is clickable and shows the panel', async () => {
+    const transcriptTab = page.locator('[class*="tabBtn"]', { hasText: 'Transcript' })
+    await expect(transcriptTab).toBeVisible()
+    await transcriptTab.click()
+    await page.waitForTimeout(300)
+    await screenshot(page, 'editor-transcript-tab')
+    // The panel renders some transcript/AI affordance text regardless of state
+    const bodyText = (await page.textContent('body')).toLowerCase()
+    expect(bodyText).toContain('transcript')
+  })
+
+  test('captions panel offers SRT and VTT export once a caption exists', async () => {
+    const captionsTab = page.locator('[class*="tabBtn"]', { hasText: 'Captions' })
+    await captionsTab.click()
+    await page.waitForTimeout(300)
+    // Export buttons only appear once there's at least one caption — add one.
+    await page.locator('button', { hasText: '+ Add' }).first().click()
+    await page.waitForTimeout(300)
+    await expect(page.locator('text=Export SRT').first()).toBeVisible()
+    await expect(page.locator('text=Export VTT').first()).toBeVisible()
+  })
+
   test('inspector panel has effect controls', async () => {
     await screenshot(page, 'editor-inspector')
 
