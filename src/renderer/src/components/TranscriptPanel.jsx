@@ -72,7 +72,7 @@ function TranscriptPanel({ project, projectId, currentTime, onSeek, onEditChange
       setHasKey(!!res?.active)
       // keep showing a hint for whichever provider is active
       const a = res?.active
-      setKeyHint(a === 'gemini' ? (res.gemini.hint || '') : a === 'claude' ? (res.claude.hint || '') : '')
+      setKeyHint(a === 'gemini' ? (res.gemini?.hint || '') : a === 'claude' ? (res.claude?.hint || '') : '')
     }).catch(() => {})
   }, [])
 
