@@ -1,120 +1,65 @@
-// AI copilot — bring-your-own Anthropic (Claude) API key.
+// AI copilot — bring-your-own Anthropic (Claude) or Google Gemini API key.
 //
-// This module talks to the Anthropic Messages API over plain `fetch` (no SDK
-// dependency). The user supplies their own API key; nothing here runs unless a
-// key is configured AND the user explicitly triggers an action from the UI.
-// Transcript text is sent to Anthropic only for the requested feature.
+// This module routes through the provider layer (ai/providers/*) and the
+// help knowledge base (shared/help-knowledge.js). The user supplies their own
+// API key; nothing here runs unless a key is configured AND the user explicitly
+// triggers an action from the UI.
+// Transcript text is sent to the selected provider only for the requested feature.
 //
-// Key storage: the Claude API key lives in the app's main preferences
-// (preferences.js, `claudeApiKey`) so the Settings screen and the in-editor
-// AI panel share a single source of truth. An ANTHROPIC_API_KEY env var is
-// honored as a fallback for power users.
+// Key storage: API keys live in the app's main preferences (preferences.js) so
+// the Settings screen and the in-editor AI panel share a single source of truth.
+// ANTHROPIC_API_KEY and GEMINI_API_KEY env vars are honored as fallbacks.
 //
-// Model: 'claude-fable-5' (Anthropic's most capable model at time of writing).
-// NOTE on the API surface for this model:
-//   - thinking is always on; do NOT send a `thinking` parameter.
-//   - sampling params (temperature/top_p/top_k) are not accepted.
-//   - responses may carry stop_reason 'refusal' (HTTP 200) — handle it.
+// Provider selection: Gemini is preferred when its key is set; otherwise Claude.
 // We keep prompts asking for STRICT JSON and parse defensively, because the
 // model output is not guaranteed to be well-formed.
 
 import { getPreferences, setPreferences } from './preferences.js'
-
-const MODEL = 'claude-fable-5'
-const API_URL = 'https://api.anthropic.com/v1/messages'
-const ANTHROPIC_VERSION = '2023-06-01'
+import { selectProvider } from './ai/select.js'
+import { callClaude } from './ai/providers/claude.js'
+import { callGemini } from './ai/providers/gemini.js'
+import { HELP_KB, flattenKbForPrompt } from '../shared/help-knowledge.js'
 
 export function getClaudeApiKey() {
   // Prefer an explicitly stored key; also honor an env var for power users.
   return getPreferences().claudeApiKey || process.env.ANTHROPIC_API_KEY || ''
 }
-
+export function getGeminiApiKey() {
+  return getPreferences().geminiApiKey || process.env.GEMINI_API_KEY || ''
+}
 export function setClaudeApiKey(key) {
   setPreferences({ claudeApiKey: typeof key === 'string' ? key.trim() : '' })
   return { ok: true }
 }
+export function hasClaudeApiKey() { return !!getClaudeApiKey() }
+export function hasAnyKey() { return !!getClaudeApiKey() || !!getGeminiApiKey() }
 
-export function hasClaudeApiKey() {
-  return !!getClaudeApiKey()
+export function getKeyStatus() {
+  const c = getClaudeApiKey()
+  const g = getGeminiApiKey()
+  return {
+    claude: { hasKey: !!c, hint: c ? `…${c.slice(-4)}` : '' },
+    gemini: { hasKey: !!g, hint: g ? `…${g.slice(-4)}` : '' },
+    active: selectProvider({ claudeKey: c, geminiKey: g })
+  }
 }
 
 const NO_KEY = {
-  error: 'No Claude API key configured. Add your Anthropic API key to use AI features.',
+  error: 'No AI API key configured. Add an Anthropic or Google Gemini key in Settings.',
   code: 'NO_API_KEY'
 }
 
 /**
- * Low-level call to the Anthropic Messages API. Returns the assistant's text
- * (response.content[0].text) or throws an Error with a useful message.
+ * Provider-agnostic LLM call. Picks Gemini (free) when its key is set, else
+ * Claude. Returns the assistant text or throws an Error with a `.code`.
  */
-async function callClaude(content, { maxTokens = 2048, system } = {}) {
-  const apiKey = getClaudeApiKey()
-  if (!apiKey) {
-    const err = new Error(NO_KEY.error)
-    err.code = 'NO_API_KEY'
-    throw err
-  }
-
-  const body = {
-    model: MODEL,
-    max_tokens: maxTokens,
-    messages: [{ role: 'user', content }]
-  }
-  if (system) body.system = system
-
-  let res
-  try {
-    res = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': ANTHROPIC_VERSION,
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify(body)
-    })
-  } catch (netErr) {
-    const err = new Error(`Network error contacting Anthropic: ${netErr.message}`)
-    err.code = 'NETWORK'
-    throw err
-  }
-
-  if (!res.ok) {
-    let detail = ''
-    try {
-      const errJson = await res.json()
-      detail = errJson?.error?.message || ''
-    } catch {
-      // body wasn't JSON — fall through with status only
-    }
-    if (res.status === 401) {
-      const err = new Error('Anthropic rejected the API key (401). Check that it is valid.')
-      err.code = 'BAD_KEY'
-      throw err
-    }
-    const err = new Error(`Anthropic API error (HTTP ${res.status})${detail ? `: ${detail}` : ''}`)
-    err.code = 'API_ERROR'
-    throw err
-  }
-
-  const data = await res.json()
-
-  if (data.stop_reason === 'refusal') {
-    const err = new Error('The model declined to respond to this request.')
-    err.code = 'REFUSAL'
-    throw err
-  }
-
-  // content is an array of blocks; find the first text block defensively.
-  const textBlock = Array.isArray(data.content)
-    ? data.content.find((b) => b && b.type === 'text' && typeof b.text === 'string')
-    : null
-  if (!textBlock) {
-    const err = new Error('The model returned no text output.')
-    err.code = 'EMPTY'
-    throw err
-  }
-  return textBlock.text
+export async function callLLM({ system, content, maxTokens = 2048 } = {}) {
+  const claudeKey = getClaudeApiKey()
+  const geminiKey = getGeminiApiKey()
+  const provider = selectProvider({ claudeKey, geminiKey })
+  if (!provider) { const e = new Error(NO_KEY.error); e.code = 'NO_API_KEY'; throw e }
+  if (provider === 'gemini') return callGemini({ apiKey: geminiKey, system, content, maxTokens })
+  return callClaude({ apiKey: claudeKey, system, content, maxTokens })
 }
 
 /**
@@ -190,12 +135,38 @@ function formatTimecode(seconds) {
   return `${m}:${sec.toString().padStart(2, '0')}`
 }
 
+const HELP_SYSTEM_PROMPT = `You are the in-app help assistant for "Beam", a screen-recording and video editor.
+Answer the user's question ONLY using the Beam feature documentation below.
+- If the answer is in the docs, give a short, direct, step-by-step answer and name the relevant feature/section so the user can find it.
+- If the question is not covered by the docs, say it is not something Beam can do (or that you are not sure), and suggest the closest Beam feature if there is one.
+- Never invent menus, buttons, or keyboard shortcuts that are not in the docs.
+
+BEAM FEATURE DOCUMENTATION:
+`
+
+/**
+ * Answer a how-to question grounded in the hardcoded feature knowledge base.
+ * Returns { answer } or { error, code }.
+ */
+export async function askHelp(question) {
+  if (!hasAnyKey()) return NO_KEY
+  const q = (question || '').trim()
+  if (!q) return { error: 'Type a question first.', code: 'EMPTY_QUESTION' }
+  const system = HELP_SYSTEM_PROMPT + flattenKbForPrompt(HELP_KB)
+  try {
+    const text = await callLLM({ system, content: q, maxTokens: 1024 })
+    return { answer: text.trim() }
+  } catch (err) {
+    return { error: err.message, code: err.code || 'ERROR' }
+  }
+}
+
 /**
  * Generate a title, description and hashtags tailored to a target platform.
  * Returns { title, description, hashtags: [] } or { error, code }.
  */
 export async function generateMetadata({ segments, platform = 'youtube' } = {}) {
-  if (!hasClaudeApiKey()) return NO_KEY
+  if (!hasAnyKey()) return NO_KEY
   const transcript = transcriptToText(segments)
   if (!transcript) return { error: 'No transcript available. Transcribe the recording first.', code: 'NO_TRANSCRIPT' }
 
@@ -214,7 +185,7 @@ Transcript:
 ${transcript}`
 
   try {
-    const text = await callClaude(prompt, { maxTokens: 1024 })
+    const text = await callLLM({ content: prompt, maxTokens: 1024 })
     const json = parseJsonLoose(text)
     if (!json || typeof json !== 'object') {
       return { error: 'Could not parse the model response.', code: 'PARSE_ERROR', raw: text }
@@ -234,7 +205,7 @@ ${transcript}`
  * Returns { chapters: [{ time: seconds, title }] } or { error, code }.
  */
 export async function generateChapters({ segments } = {}) {
-  if (!hasClaudeApiKey()) return NO_KEY
+  if (!hasAnyKey()) return NO_KEY
   const transcript = transcriptToText(segments)
   if (!transcript) return { error: 'No transcript available. Transcribe the recording first.', code: 'NO_TRANSCRIPT' }
 
@@ -253,7 +224,7 @@ Transcript:
 ${transcript}`
 
   try {
-    const text = await callClaude(prompt, { maxTokens: 1024 })
+    const text = await callLLM({ content: prompt, maxTokens: 1024 })
     const json = parseJsonLoose(text)
     const chapters = json && Array.isArray(json.chapters) ? json.chapters : null
     if (!chapters) {
@@ -275,7 +246,7 @@ ${transcript}`
  * Returns { highlights: [{ start, end, reason }] } or { error, code }.
  */
 export async function suggestHighlights({ segments } = {}) {
-  if (!hasClaudeApiKey()) return NO_KEY
+  if (!hasAnyKey()) return NO_KEY
   const transcript = transcriptToText(segments)
   if (!transcript) return { error: 'No transcript available. Transcribe the recording first.', code: 'NO_TRANSCRIPT' }
 
@@ -295,7 +266,7 @@ Transcript:
 ${transcript}`
 
   try {
-    const text = await callClaude(prompt, { maxTokens: 1024 })
+    const text = await callLLM({ content: prompt, maxTokens: 1024 })
     const json = parseJsonLoose(text)
     const highlights = json && Array.isArray(json.highlights) ? json.highlights : null
     if (!highlights) {
@@ -323,7 +294,7 @@ ${transcript}`
  * Returns { cuts: [{ start, end, reason }] } or { error, code }.
  */
 export async function editByPrompt({ segments, instruction } = {}) {
-  if (!hasClaudeApiKey()) return NO_KEY
+  if (!hasAnyKey()) return NO_KEY
   if (!instruction || !instruction.trim()) {
     return { error: 'No instruction provided.', code: 'NO_INSTRUCTION' }
   }
@@ -349,7 +320,7 @@ Transcript:
 ${transcript}`
 
   try {
-    const text = await callClaude(prompt, { maxTokens: 1536 })
+    const text = await callLLM({ content: prompt, maxTokens: 1536 })
     const json = parseJsonLoose(text)
     const cuts = json && Array.isArray(json.cuts) ? json.cuts : null
     if (!cuts) {

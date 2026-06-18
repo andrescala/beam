@@ -33,7 +33,9 @@ import {
   generateMetadata,
   generateChapters,
   suggestHighlights,
-  editByPrompt
+  editByPrompt,
+  askHelp,
+  getKeyStatus
 } from './ai.js'
 
 // Force Chromium to use software H.264 decoding. macOS VideoToolbox
@@ -447,6 +449,14 @@ function registerIpcHandlers() {
     } catch (err) {
       return { error: err.message }
     }
+  })
+
+  ipcMain.handle('ai-get-keys', async () => {
+    return getKeyStatus()
+  })
+
+  ipcMain.handle('ai-help-ask', async (_event, question) => {
+    return await askHelp(question)
   })
 
   ipcMain.handle('ai-generate-metadata', async (_event, args) => {

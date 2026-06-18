@@ -68,15 +68,12 @@ function TranscriptPanel({ project, projectId, currentTime, onSeek, onEditChange
   const activeRef = useRef(null)
 
   useEffect(() => {
-    let cancelled = false
-    window.electronAPI.aiGetKey().then((res) => {
-      if (cancelled || !res) return
-      setHasKey(!!res.hasKey)
-      setKeyHint(res.hint || '')
-    })
-    return () => {
-      cancelled = true
-    }
+    window.electronAPI.aiGetKeys().then((res) => {
+      setHasKey(!!res?.active)
+      // keep showing a hint for whichever provider is active
+      const a = res?.active
+      setKeyHint(a === 'gemini' ? (res.gemini?.hint || '') : a === 'claude' ? (res.claude?.hint || '') : '')
+    }).catch(() => {})
   }, [])
 
   // Index of the segment under the playhead.

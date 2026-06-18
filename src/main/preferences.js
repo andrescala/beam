@@ -13,6 +13,7 @@ const schema = {
   countdownDuration: { type: 'number', default: 3 },
   normalizeLoudness: { type: 'boolean', default: false },
   claudeApiKey: { type: 'string', default: '' },
+  geminiApiKey: { type: 'string', default: '' },
   updateChannel: { type: 'string', default: 'latest' },
   theme: { type: 'string', default: 'dark' },
   windowBounds: {
