@@ -19,7 +19,11 @@ import { tmpdir } from 'os'
 import ffmpeg from 'fluent-ffmpeg'
 import ffmpegPath from 'ffmpeg-static'
 
-ffmpeg.setFfmpegPath(ffmpegPath)
+// Resolve the binary out of the asar archive (it's unpacked at build time).
+// setFfmpegPath is a fluent-ffmpeg global, so a raw asar path here would clobber
+// the corrected path set in ffmpeg.js and make every spawn fail with ENOTDIR in
+// the packaged app. Keep this in sync with ffmpeg.js.
+ffmpeg.setFfmpegPath(ffmpegPath.replace('app.asar', 'app.asar.unpacked'))
 const execFileAsync = promisify(execFile)
 
 // Common install locations to try before giving up.
