@@ -136,7 +136,7 @@
   border-bottom-right-radius: 0;
 }
 
-.answer {
+.faqAnswer {
   padding: 10px 12px 12px;
   background: var(--bg3);
   border: 1px solid var(--border);
@@ -145,12 +145,35 @@
   margin-bottom: 6px;
 }
 
-.answer p {
+.faqAnswer p {
   font-size: 12px;
   color: var(--text2);
   line-height: 1.6;
   margin: 0 0 4px;
 }
-.answer p:last-child {
+.faqAnswer p:last-child {
   margin-bottom: 0;
 }
+
+.askBox { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.askRow { display: flex; gap: 8px; }
+.askInput {
+  flex: 1; padding: 8px 10px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--bg2); color: var(--text); font-size: 13px;
+}
+.askInput:disabled { opacity: 0.6; }
+.askBtn {
+  padding: 8px 14px; border-radius: 6px; border: 1px solid var(--border2, var(--border));
+  background: var(--bg3); color: var(--text); cursor: pointer; font-size: 13px;
+}
+.askBtn:disabled { opacity: 0.5; cursor: not-allowed; }
+.answer {
+  margin-top: 10px; padding: 10px 12px; border-radius: 6px;
+  background: var(--bg2); color: var(--text2); font-size: 13px; line-height: 1.5;
+}
+.answer p { margin: 0 0 6px; }
+.answerClear {
+  margin-top: 4px; padding: 2px 8px; font-size: 11px; border-radius: 4px;
+  border: 1px solid var(--border); background: transparent; color: var(--text2); cursor: pointer;
+}
+.askGate { margin: 0; font-size: 12px; color: var(--text2); line-height: 1.5; }
