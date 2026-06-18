@@ -263,6 +263,20 @@ function Settings() {
 
           <div className={styles.row}>
             <div className={styles.rowLabel}>
+              <span className={styles.label}>Google Gemini API key</span>
+              <span className={styles.hint}>Optional. Free tier available — used for AI help and copilot. Preferred when set.</span>
+            </div>
+            <input
+              className={styles.input}
+              type="password"
+              placeholder="AIza…"
+              value={prefs.geminiApiKey || ''}
+              onChange={(e) => update('geminiApiKey', e.target.value)}
+            />
+          </div>
+
+          <div className={styles.row}>
+            <div className={styles.rowLabel}>
               <span className={styles.label}>Whisper engine</span>
               <span className={styles.hint}>Local speech-to-text used to generate captions.</span>
             </div>
